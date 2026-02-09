@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+{% block title %}推送规则 - 政策情报助手{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-2xl font-bold text-gray-900">推送规则</h2>
+  <button class="btn btn-primary" onclick="openModal()">+ 添加规则</button>
+</div>
+
+{% if rules %}
+<div class="space-y-4">
+  {% for r in rules %}
+  <div class="card">
+    <div class="flex items-start justify-between">
+      <div>
+        <div class="flex items-center gap-3">
+          <h3 class="font-semibold text-gray-900">{{ r.name }}</h3>
+          <span class="badge {% if r.channel == 'email' %}badge-blue{% else %}badge-green{% endif %}">
+            {{ '邮件' if r.channel == 'email' else '企微' }}
+          </span>
+          {% if r.push_mode == 'scheduled' %}
+          <span class="badge badge-gray">定时: {{ r.push_schedule }}</span>
+          {% else %}
+          <span class="badge badge-green">更新后推送</span>
+          {% endif %}
+          {% if not r.is_active %}
+          <span class="badge badge-gray">已停用</span>
+          {% endif %}
+        </div>
+        <p class="text-sm text-gray-500 mt-1">
+          监控源: {{ r.source_names | join('、') if r.source_names else '全部' }}
+        </p>
+        <p class="text-sm text-gray-500 mt-1">
+          接收人: {{ r.recipients | join(', ') }}
+        </p>
+      </div>
+      <div class="flex items-center gap-2">
+        <button class="btn btn-primary text-sm" onclick="pushNow({{ r.id }}, '{{ r.name }}')">立即推送</button>
+        <button class="btn btn-secondary text-sm" onclick="editRule({{ r.id }})">编辑</button>
+        <button class="btn btn-danger text-sm" onclick="deleteRule({{ r.id }}, '{{ r.name }}')">删除</button>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card text-center py-12">
+  <p class="text-gray-400 mb-3">暂无推送规则</p>
+  <p class="text-sm text-gray-400">添加规则后，采集完成时会自动推送报告到指定接收人</p>
+</div>
+{% endif %}
+
+<!-- Modal -->
+<div id="modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50" style="display:none;">
+  <div class="bg-white rounded-xl p-6 w-full max-w-lg mx-4">
+    <h3 id="modalTitle" class="text-lg font-bold mb-4">添加推送规则</h3>
+    <form id="ruleForm" onsubmit="saveRule(event)">
+      <input type="hidden" id="ruleId" value="">
+      <div class="space-y-3">
+        <div>
+          <label class="form-label">规则名称</label>
+          <input class="form-input" id="f_name" required placeholder="如: 能源组周报推送">
+        </div>
+        <div>
+          <label class="form-label">推送渠道</label>
+          <select class="form-input" id="f_channel">
+            <option value="email">邮件</option>
+            <option value="wechat_webhook">企业微信 Webhook (V2)</option>
+          </select>
+        </div>
+        <div>
+          <label class="form-label">关联监控源ID (逗号分隔, 留空=全部)</label>
+          <input class="form-input" id="f_source_ids" placeholder="1,2,3">
+        </div>
+        <div>
+          <label class="form-label">接收人 (逗号分隔, 邮箱或Webhook URL)</label>
+          <input class="form-input" id="f_recipients" required placeholder="user@example.com, user2@example.com">
+        </div>
+        <div>
+          <label class="form-label">推送频率</label>
+          <div class="flex gap-4 mt-1">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="push_mode" value="on_update" checked onchange="toggleSchedule()">
+              <span class="text-sm text-gray-700">采集更新后推送</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="push_mode" value="scheduled" onchange="toggleSchedule()">
+              <span class="text-sm text-gray-700">定时推送</span>
+            </label>
+          </div>
+        </div>
+        <div id="scheduleGroup" class="hidden">
+          <label class="form-label">Cron 表达式</label>
+          <input class="form-input" id="f_push_schedule" placeholder="0 9 * * 1 (每周一9点)">
+          <p class="text-xs text-gray-400 mt-1">格式: 分 时 日 月 周 (如 0 9 * * * 表示每天9点, */30 * * * * 表示每30分钟)</p>
+        </div>
+      </div>
+      <div class="flex justify-end gap-3 mt-6">
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+        <button type="submit" class="btn btn-primary">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleSchedule() {
+  const mode = document.querySelector('input[name="push_mode"]:checked').value;
+  document.getElementById('scheduleGroup').classList.toggle('hidden', mode !== 'scheduled');
+}
+
+function openModal(data) {
+  document.getElementById('modal').style.display = 'flex';
+  if (data) {
+    document.getElementById('modalTitle').textContent = '编辑推送规则';
+    document.getElementById('ruleId').value = data.id;
+    document.getElementById('f_name').value = data.name;
+    document.getElementById('f_channel').value = data.channel;
+    document.getElementById('f_source_ids').value = (data.source_ids||[]).join(',');
+    document.getElementById('f_recipients').value = (data.recipients||[]).join(', ');
+    // Set push mode
+    const mode = data.push_mode || 'on_update';
+    document.querySelector(`input[name="push_mode"][value="${mode}"]`).checked = true;
+    document.getElementById('f_push_schedule').value = data.push_schedule || '';
+    toggleSchedule();
+  } else {
+    document.getElementById('modalTitle').textContent = '添加推送规则';
+    document.getElementById('ruleForm').reset();
+    document.getElementById('ruleId').value = '';
+    // Reset radio to default
+    document.querySelector('input[name="push_mode"][value="on_update"]').checked = true;
+    toggleSchedule();
+  }
+}
+function closeModal() { document.getElementById('modal').style.display = 'none'; }
+
+async function editRule(id) {
+  const res = await fetch(`/api/push-rules`);
+  const rules = await res.json();
+  const data = rules.find(r => r.id === id);
+  if (data) openModal(data);
+}
+
+async function saveRule(e) {
+  e.preventDefault();
+  const id = document.getElementById('ruleId').value;
+  const pushMode = document.querySelector('input[name="push_mode"]:checked').value;
+  const body = {
+    name: document.getElementById('f_name').value,
+    channel: document.getElementById('f_channel').value,
+    source_ids: document.getElementById('f_source_ids').value.split(',').map(s=>parseInt(s.trim())).filter(Boolean),
+    recipients: document.getElementById('f_recipients').value.split(',').map(s=>s.trim()).filter(Boolean),
+    push_mode: pushMode,
+    push_schedule: pushMode === 'scheduled' ? document.getElementById('f_push_schedule').value : '',
+  };
+  const url = id ? `/api/push-rules/${id}` : '/api/push-rules';
+  const method = id ? 'PUT' : 'POST';
+  const res = await fetch(url, { method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  if (res.ok) { showToast('保存成功'); setTimeout(()=>location.reload(), 500); }
+  else { showToast('保存失败', 'error'); }
+}
+
+async function deleteRule(id, name) {
+  if (!confirm(`确定删除规则「${name}」？`)) return;
+  const res = await fetch(`/api/push-rules/${id}`, { method: 'DELETE' });
+  if (res.ok) { showToast('已删除'); setTimeout(()=>location.reload(), 500); }
+  else { showToast('删除失败', 'error'); }
+}
+
+async function pushNow(id, name) {
+  if (!confirm(`确定立即推送规则「${name}」的最新报告？`)) return;
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '推送中...';
+  try {
+    const res = await fetch(`/api/push-rules/${id}/push`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(data.message || '推送成功');
+    } else {
+      showToast(data.detail || '推送失败', 'error');
+    }
+  } catch (e) {
+    showToast('推送请求失败', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '立即推送';
+  }
+}
+</script>
+{% endblock %}

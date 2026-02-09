@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}报告中心 - 政策情报助手{% endblock %}
+
+{% block content %}
+<h2 class="text-2xl font-bold text-gray-900 mb-6">报告中心</h2>
+
+<!-- Filter toolbar -->
+<div class="flex flex-wrap items-center gap-3 mb-4">
+  <input type="date" id="filterDateFrom" class="form-input" style="width:auto" onchange="fetchReports()">
+  <span class="text-gray-400">至</span>
+  <input type="date" id="filterDateTo" class="form-input" style="width:auto" onchange="fetchReports()">
+  <select id="filterSort" class="form-input" style="width:auto" onchange="fetchReports()">
+    <option value="desc">最新优先</option>
+    <option value="asc">最早优先</option>
+  </select>
+</div>
+
+<!-- Action bar -->
+<div class="flex items-center gap-3 mb-4 text-sm">
+  <label class="flex items-center gap-1 cursor-pointer">
+    <input type="checkbox" id="selectAll" onchange="toggleSelectAll()">
+    <span>全选</span>
+  </label>
+  <span id="selectedCount" class="text-gray-500">已选 0 条</span>
+  <button class="btn btn-danger text-xs" id="batchDeleteBtn" onclick="batchDeleteReports()" style="display:none">批量删除</button>
+  <button class="btn btn-danger text-xs" onclick="clearAllReports()">一键清空</button>
+</div>
+
+<!-- Reports list -->
+<div id="reportsList" class="space-y-3">
+  <p class="text-gray-400">加载中...</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let reportsData = [];
+let selectedIds = new Set();
+
+async function fetchReports() {
+  const params = new URLSearchParams();
+  const df = document.getElementById('filterDateFrom').value;
+  const dt = document.getElementById('filterDateTo').value;
+  const sort = document.getElementById('filterSort').value;
+  if (df) params.set('date_from', df);
+  if (dt) params.set('date_to', dt);
+  params.set('sort', sort);
+
+  try {
+    const res = await fetch('/api/reports?' + params.toString());
+    reportsData = await res.json();
+    selectedIds.clear();
+    renderReports();
+  } catch (e) {
+    document.getElementById('reportsList').innerHTML = '<p class="text-red-500">加载失败</p>';
+  }
+}
+
+function renderReports() {
+  const container = document.getElementById('reportsList');
+  if (!reportsData.length) {
+    container.innerHTML = '<div class="card text-center py-12"><p class="text-gray-400">暂无报告</p></div>';
+    updateSelectedCount();
+    return;
+  }
+
+  container.innerHTML = reportsData.map(r => `
+    <div class="card flex items-center gap-3 hover:border-blue-300 transition-colors" data-id="${r.id}">
+      <input type="checkbox" class="report-cb" value="${r.id}" onchange="onCheckChange()" ${selectedIds.has(r.id) ? 'checked' : ''}>
+      <a href="/reports/${r.id}" class="flex-1 min-w-0">
+        <h3 class="font-semibold text-gray-900">${escHtml(r.title)}</h3>
+        <p class="text-sm text-gray-400 mt-1">生成于 ${r.generated_at || '未知'}</p>
+      </a>
+      <button class="text-red-500 hover:text-red-700 text-sm" onclick="deleteSingleReport(${r.id})">🗑️</button>
+      <a href="/reports/${r.id}">
+        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+      </a>
+    </div>
+  `).join('');
+
+  updateSelectedCount();
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+function onCheckChange() {
+  selectedIds.clear();
+  document.querySelectorAll('.report-cb:checked').forEach(cb => selectedIds.add(Number(cb.value)));
+  updateSelectedCount();
+}
+
+function toggleSelectAll() {
+  const checked = document.getElementById('selectAll').checked;
+  document.querySelectorAll('.report-cb').forEach(cb => { cb.checked = checked; });
+  selectedIds.clear();
+  if (checked) reportsData.forEach(r => selectedIds.add(r.id));
+  updateSelectedCount();
+}
+
+function updateSelectedCount() {
+  document.getElementById('selectedCount').textContent = `已选 ${selectedIds.size} 条`;
+  document.getElementById('batchDeleteBtn').style.display = selectedIds.size > 0 ? '' : 'none';
+  const allCb = document.getElementById('selectAll');
+  allCb.checked = reportsData.length > 0 && selectedIds.size === reportsData.length;
+}
+
+async function deleteSingleReport(id) {
+  if (!confirm('确定删除此报告？')) return;
+  try {
+    const res = await fetch(`/api/reports/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      showToast('已删除');
+      fetchReports();
+    } else {
+      const err = await res.text();
+      console.error('删除失败:', res.status, err);
+      showToast(`删除失败 (${res.status})`, 'error');
+    }
+  } catch (e) {
+    console.error('请求失败:', e);
+    showToast('请求失败', 'error');
+  }
+}
+
+async function batchDeleteReports() {
+  const ids = Array.from(selectedIds);
+  if (!ids.length) return;
+  if (!confirm(`确定删除选中的 ${ids.length} 个报告？`)) return;
+  try {
+    const res = await fetch('/api/reports/batch-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (res.ok) {
+      showToast(`已删除 ${ids.length} 个报告`);
+      fetchReports();
+    } else {
+      const err = await res.text();
+      console.error('批量删除失败:', res.status, err);
+      showToast(`删除失败 (${res.status})`, 'error');
+    }
+  } catch (e) {
+    console.error('请求失败:', e);
+    showToast('请求失败', 'error');
+  }
+}
+
+async function clearAllReports() {
+  if (!confirm('确定清空全部报告？此操作不可恢复！')) return;
+  try {
+    const res = await fetch('/api/reports/all', { method: 'DELETE' });
+    if (res.ok) {
+      showToast('已清空');
+      fetchReports();
+    } else {
+      const err = await res.text();
+      console.error('清空失败:', res.status, err);
+      showToast(`清空失败 (${res.status})`, 'error');
+    }
+  } catch (e) {
+    console.error('请求失败:', e);
+    showToast('请求失败', 'error');
+  }
+}
+
+// Load on page init
+document.addEventListener('DOMContentLoaded', fetchReports);
+</script>
+{% endblock %}

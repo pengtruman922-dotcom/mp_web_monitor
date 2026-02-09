@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}系统设置 - 政策情报助手{% endblock %}
+
+{% block content %}
+<h2 class="text-2xl font-bold text-gray-900 mb-6">系统设置</h2>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <!-- LLM Config -->
+  <div class="card">
+    <h3 class="text-lg font-semibold text-gray-900 mb-4">AI 模型配置</h3>
+    <form id="llmForm" onsubmit="saveLLM(event)">
+      <div class="space-y-3">
+        <div>
+          <label class="form-label">配置名称</label>
+          <input class="form-input" id="llm_name" value="{{ llm.name if llm else '' }}" placeholder="通义千问 qwen3-max">
+        </div>
+        <div>
+          <label class="form-label">API URL</label>
+          <input class="form-input" id="llm_url" value="{{ llm.api_url if llm else '' }}" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions">
+        </div>
+        <div>
+          <label class="form-label">API Key</label>
+          <input class="form-input" id="llm_key" type="password" value="{{ llm.api_key if llm else '' }}" placeholder="sk-xxx">
+        </div>
+        <div>
+          <label class="form-label">模型名称</label>
+          <input class="form-input" id="llm_model" value="{{ llm.model_name if llm else '' }}" placeholder="qwen3-max">
+        </div>
+      </div>
+      <div class="flex gap-3 mt-4">
+        <button type="submit" class="btn btn-primary">保存</button>
+        <button type="button" class="btn btn-secondary" onclick="testLLM()">测试连接</button>
+      </div>
+      <p id="llmTestResult" class="text-sm mt-2"></p>
+    </form>
+  </div>
+
+  <!-- Email Config -->
+  <div class="card">
+    <h3 class="text-lg font-semibold text-gray-900 mb-4">邮件配置</h3>
+    <form id="emailForm" onsubmit="saveEmail(event)">
+      <div class="space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="form-label">SMTP 服务器</label>
+            <input class="form-input" id="smtp_host" value="{{ email.smtp_host if email else '' }}" placeholder="smtp.example.com">
+          </div>
+          <div>
+            <label class="form-label">端口</label>
+            <input class="form-input" id="smtp_port" type="number" value="{{ email.smtp_port if email else 465 }}">
+          </div>
+        </div>
+        <div>
+          <label class="flex items-center gap-2 text-sm">
+            <input type="checkbox" id="smtp_tls" {% if not email or email.use_tls %}checked{% endif %}>
+            使用 TLS 加密
+          </label>
+        </div>
+        <div>
+          <label class="form-label">用户名</label>
+          <input class="form-input" id="smtp_user" value="{{ email.username if email else '' }}">
+        </div>
+        <div>
+          <label class="form-label">密码</label>
+          <input class="form-input" id="smtp_pass" type="password" value="{{ email.password if email else '' }}">
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="form-label">发件人邮箱</label>
+            <input class="form-input" id="sender_email" value="{{ email.sender_email if email else '' }}">
+          </div>
+          <div>
+            <label class="form-label">发件人名称</label>
+            <input class="form-input" id="sender_name" value="{{ email.sender_name if email else '政策情报助手' }}">
+          </div>
+        </div>
+      </div>
+      <div class="flex gap-3 mt-4">
+        <button type="submit" class="btn btn-primary">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Scheduler -->
+<div class="card mt-6">
+  <h3 class="text-lg font-semibold text-gray-900 mb-4">定时调度</h3>
+  <div class="flex items-end gap-4">
+    <div class="flex-1">
+      <label class="form-label">Cron 表达式</label>
+      <input class="form-input" id="cron_expr" value="0 9 * * 1" placeholder="0 9 * * 1 (每周一9:00)">
+      <p class="text-xs text-gray-400 mt-1">格式: 分 时 日 月 周几 | 例: "0 9 * * 1" = 每周一9:00</p>
+    </div>
+    <button class="btn btn-primary" onclick="updateSchedule()">更新</button>
+  </div>
+  {% if scheduler_jobs %}
+  <div class="mt-4 text-sm text-gray-500">
+    <p class="font-medium text-gray-700 mb-1">当前任务:</p>
+    {% for job in scheduler_jobs %}
+    <p>{{ job.name }} — 下次执行: {{ job.next_run }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function saveLLM(e) {
+  e.preventDefault();
+  const body = {
+    name: document.getElementById('llm_name').value,
+    api_url: document.getElementById('llm_url').value,
+    api_key: document.getElementById('llm_key').value,
+    model_name: document.getElementById('llm_model').value,
+  };
+  const res = await fetch('/api/settings/llm', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  if (res.ok) showToast('AI配置已保存');
+  else showToast('保存失败', 'error');
+}
+
+async function testLLM() {
+  const el = document.getElementById('llmTestResult');
+  el.textContent = '测试中...';
+  el.className = 'text-sm mt-2 text-gray-500';
+  const body = {
+    name: document.getElementById('llm_name').value,
+    api_url: document.getElementById('llm_url').value,
+    api_key: document.getElementById('llm_key').value,
+    model_name: document.getElementById('llm_model').value,
+  };
+  try {
+    const res = await fetch('/api/settings/llm/test', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+    const data = await res.json();
+    if (data.ok) {
+      el.textContent = '连接成功: ' + data.response;
+      el.className = 'text-sm mt-2 text-green-600';
+    } else {
+      el.textContent = '连接失败: ' + data.error;
+      el.className = 'text-sm mt-2 text-red-600';
+    }
+  } catch(e) {
+    el.textContent = '请求失败: ' + e;
+    el.className = 'text-sm mt-2 text-red-600';
+  }
+}
+
+async function saveEmail(e) {
+  e.preventDefault();
+  const body = {
+    smtp_host: document.getElementById('smtp_host').value,
+    smtp_port: parseInt(document.getElementById('smtp_port').value) || 465,
+    use_tls: document.getElementById('smtp_tls').checked,
+    username: document.getElementById('smtp_user').value,
+    password: document.getElementById('smtp_pass').value,
+    sender_email: document.getElementById('sender_email').value,
+    sender_name: document.getElementById('sender_name').value,
+  };
+  const res = await fetch('/api/settings/email', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  if (res.ok) showToast('邮件配置已保存');
+  else showToast('保存失败', 'error');
+}
+
+async function updateSchedule() {
+  const cron = document.getElementById('cron_expr').value;
+  const res = await fetch('/api/settings/scheduler', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({cron}) });
+  if (res.ok) { showToast('调度已更新'); setTimeout(()=>location.reload(), 500); }
+  else { const d = await res.json(); showToast(d.detail || '更新失败', 'error'); }
+}
+
+</script>
+{% endblock %}

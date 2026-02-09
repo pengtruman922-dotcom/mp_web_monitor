@@ -1,0 +1,7 @@
+.env
+data/db.sqlite
+data/downloads/
+__pycache__/
+*.pyc
+.venv/
+venv/

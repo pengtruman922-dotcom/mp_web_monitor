@@ -1,0 +1,277 @@
+{% extends "base.html" %}
+{% block title %}总览 - 政策情报助手{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-2xl font-bold text-gray-900">总览</h2>
+</div>
+
+<!-- Stats -->
+<div class="grid grid-cols-4 gap-4 mb-6">
+  <div class="card">
+    <p class="text-sm text-gray-500">监控源</p>
+    <p class="text-3xl font-bold text-gray-900 mt-1">{{ stats.total_sources }}</p>
+    <p class="text-xs text-gray-400 mt-1">{{ stats.active_sources }} 个活跃</p>
+  </div>
+  <div class="card">
+    <p class="text-sm text-gray-500">总采集内容</p>
+    <p class="text-3xl font-bold text-gray-900 mt-1">{{ stats.total_results }}</p>
+  </div>
+  <div class="card">
+    <p class="text-sm text-gray-500">报告数量</p>
+    <p class="text-3xl font-bold text-gray-900 mt-1">{{ stats.total_reports }}</p>
+  </div>
+  <div class="card">
+    <p class="text-sm text-gray-500">上次采集</p>
+    <p class="text-lg font-semibold text-gray-900 mt-1">{{ stats.last_crawl or '暂无' }}</p>
+  </div>
+</div>
+
+<!-- Sources Status -->
+<div class="card mb-6">
+  <h3 class="text-lg font-semibold text-gray-900 mb-4">监控源状态</h3>
+  {% if sources %}
+  <div class="space-y-3" id="sourcesList">
+    {% for s in sources %}
+    <div class="source-item flex items-center justify-between py-2 border-b border-gray-100 last:border-0" {% if loop.index > 3 %}style="display:none"{% endif %}>
+      <div class="flex items-center gap-3">
+        {% if s.is_active %}
+        <span class="badge badge-green">正常</span>
+        {% else %}
+        <span class="badge badge-gray">已停用</span>
+        {% endif %}
+        <div>
+          <p class="font-medium text-gray-900">{{ s.name }}</p>
+          <p class="text-xs text-gray-400">{{ s.url }}</p>
+        </div>
+      </div>
+      <div class="text-right text-sm text-gray-500">
+        <p>{{ s.last_crawl or '尚未采集' }}</p>
+        {% if s.last_items is not none %}
+        <p class="text-xs">上次发现 {{ s.last_items }} 条</p>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% if sources|length > 3 %}
+  <button onclick="toggleSources()" id="toggleSourcesBtn" class="btn btn-secondary mt-3 w-full text-center text-sm">
+    展开查看全部 {{ sources|length }} 个监控源 ▼
+  </button>
+  {% endif %}
+  {% else %}
+  <p class="text-gray-400">暂无监控源</p>
+  {% endif %}
+</div>
+
+<!-- Results with dynamic filtering -->
+<div class="card">
+  <h3 class="text-lg font-semibold text-gray-900 mb-4">最新内容摘要</h3>
+
+  <!-- Filter toolbar -->
+  <div class="flex flex-wrap items-center gap-3 mb-4">
+    <select id="filterSource" class="form-input" style="width:auto;min-width:140px" onchange="fetchResults()">
+      <option value="">全部监控源</option>
+      {% for s in sources %}
+      <option value="{{ s.id }}">{{ s.name }}</option>
+      {% endfor %}
+    </select>
+    <input type="date" id="filterDateFrom" class="form-input" style="width:auto" onchange="fetchResults()">
+    <span class="text-gray-400">至</span>
+    <input type="date" id="filterDateTo" class="form-input" style="width:auto" onchange="fetchResults()">
+    <select id="filterSort" class="form-input" style="width:auto" onchange="fetchResults()">
+      <option value="desc">最新优先</option>
+      <option value="asc">最早优先</option>
+    </select>
+  </div>
+
+  <!-- Action bar -->
+  <div class="flex items-center gap-3 mb-4 text-sm">
+    <label class="flex items-center gap-1 cursor-pointer">
+      <input type="checkbox" id="selectAll" onchange="toggleSelectAll()">
+      <span>全选</span>
+    </label>
+    <span id="selectedCount" class="text-gray-500">已选 0 条</span>
+    <button class="btn btn-danger text-xs" id="batchDeleteBtn" onclick="batchDeleteResults()" style="display:none">批量删除</button>
+    <button class="btn btn-danger text-xs" onclick="clearAllResults()">一键清空</button>
+  </div>
+
+  <!-- Results list -->
+  <div id="resultsList" class="space-y-4">
+    <p class="text-gray-400">加载中...</p>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// --- Source collapse ---
+let sourcesExpanded = false;
+function toggleSources() {
+  sourcesExpanded = !sourcesExpanded;
+  const items = document.querySelectorAll('.source-item');
+  items.forEach((el, i) => {
+    if (i >= 3) el.style.display = sourcesExpanded ? '' : 'none';
+  });
+  const btn = document.getElementById('toggleSourcesBtn');
+  if (btn) {
+    btn.textContent = sourcesExpanded
+      ? '收起监控源 ▲'
+      : '展开查看全部 {{ sources|length }} 个监控源 ▼';
+  }
+}
+
+// --- Results dynamic list ---
+let resultsData = [];
+let selectedIds = new Set();
+
+async function fetchResults() {
+  const params = new URLSearchParams();
+  const src = document.getElementById('filterSource').value;
+  const df = document.getElementById('filterDateFrom').value;
+  const dt = document.getElementById('filterDateTo').value;
+  const sort = document.getElementById('filterSort').value;
+  if (src) params.set('source_id', src);
+  if (df) params.set('date_from', df);
+  if (dt) params.set('date_to', dt);
+  params.set('sort', sort);
+  params.set('limit', '100');
+
+  try {
+    const res = await fetch('/api/results?' + params.toString());
+    resultsData = await res.json();
+    selectedIds.clear();
+    renderResults();
+  } catch (e) {
+    document.getElementById('resultsList').innerHTML = '<p class="text-red-500">加载失败</p>';
+  }
+}
+
+function renderResults() {
+  const container = document.getElementById('resultsList');
+  if (!resultsData.length) {
+    container.innerHTML = '<p class="text-gray-400">暂无采集内容</p>';
+    updateSelectedCount();
+    return;
+  }
+
+  const typeMap = {news:'新闻', policy:'政策', notice:'通知', file:'文件'};
+  const badgeMap = {news:'badge-gray', policy:'badge-blue', notice:'badge-yellow', file:'badge-gray'};
+
+  container.innerHTML = resultsData.map(r => `
+    <div class="border-b border-gray-100 pb-4 last:border-0" data-id="${r.id}">
+      <div class="flex items-start gap-2">
+        <input type="checkbox" class="result-cb mt-1" value="${r.id}" onchange="onCheckChange()" ${selectedIds.has(r.id) ? 'checked' : ''}>
+        <span class="badge ${badgeMap[r.content_type] || 'badge-gray'}">
+          ${typeMap[r.content_type] || '内容'}
+        </span>
+        <div class="flex-1 min-w-0">
+          <p class="font-medium text-gray-900">${escHtml(r.title)}</p>
+          ${(r.summary && r.summary.trim() !== r.title.trim()) ? `<p class="text-sm text-gray-600 mt-1">${escHtml(r.summary.substring(0, 200))}${r.summary.length > 200 ? '...' : ''}</p>` : ''}
+          <div class="flex items-center gap-3 mt-2 text-xs flex-wrap">
+            ${r.source_name ? `<span class="text-gray-400">${escHtml(r.source_name)}</span>` : ''}
+            ${r.crawled_at ? `<span class="text-gray-400">${r.crawled_at}</span>` : ''}
+            <a href="${escHtml(r.url)}" target="_blank" class="text-blue-600 hover:underline">查看原文</a>
+            ${r.has_attachment ? `<span class="text-gray-400">📎 ${escHtml(r.attachment_name)}</span>` : ''}
+            <button class="text-red-500 hover:text-red-700" onclick="deleteSingleResult(${r.id})">🗑️</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  updateSelectedCount();
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+function onCheckChange() {
+  selectedIds.clear();
+  document.querySelectorAll('.result-cb:checked').forEach(cb => selectedIds.add(Number(cb.value)));
+  updateSelectedCount();
+}
+
+function toggleSelectAll() {
+  const checked = document.getElementById('selectAll').checked;
+  document.querySelectorAll('.result-cb').forEach(cb => { cb.checked = checked; });
+  selectedIds.clear();
+  if (checked) resultsData.forEach(r => selectedIds.add(r.id));
+  updateSelectedCount();
+}
+
+function updateSelectedCount() {
+  document.getElementById('selectedCount').textContent = `已选 ${selectedIds.size} 条`;
+  document.getElementById('batchDeleteBtn').style.display = selectedIds.size > 0 ? '' : 'none';
+  const allCb = document.getElementById('selectAll');
+  allCb.checked = resultsData.length > 0 && selectedIds.size === resultsData.length;
+}
+
+async function deleteSingleResult(id) {
+  if (!confirm('确定删除此条记录？')) return;
+  try {
+    const res = await fetch(`/api/results/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      showToast('已删除');
+      fetchResults();
+    } else {
+      const err = await res.text();
+      console.error('删除失败:', res.status, err);
+      showToast(`删除失败 (${res.status})`, 'error');
+    }
+  } catch (e) {
+    console.error('请求失败:', e);
+    showToast('请求失败', 'error');
+  }
+}
+
+async function batchDeleteResults() {
+  const ids = Array.from(selectedIds);
+  if (!ids.length) return;
+  if (!confirm(`确定删除选中的 ${ids.length} 条记录？`)) return;
+  try {
+    const res = await fetch('/api/results/batch-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (res.ok) {
+      showToast(`已删除 ${ids.length} 条`);
+      fetchResults();
+    } else {
+      const err = await res.text();
+      console.error('批量删除失败:', res.status, err);
+      showToast(`删除失败 (${res.status})`, 'error');
+    }
+  } catch (e) {
+    console.error('请求失败:', e);
+    showToast('请求失败', 'error');
+  }
+}
+
+async function clearAllResults() {
+  if (!confirm('确定清空全部采集内容？此操作不可恢复！')) return;
+  try {
+    const res = await fetch('/api/results/all', { method: 'DELETE' });
+    if (res.ok) {
+      showToast('已清空');
+      fetchResults();
+    } else {
+      const err = await res.text();
+      console.error('清空失败:', res.status, err);
+      showToast(`清空失败 (${res.status})`, 'error');
+    }
+  } catch (e) {
+    console.error('请求失败:', e);
+    showToast('请求失败', 'error');
+  }
+}
+
+// Load on page init
+document.addEventListener('DOMContentLoaded', fetchResults);
+</script>
+{% endblock %}

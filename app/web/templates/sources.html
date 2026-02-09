@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% block title %}监控源管理 - 政策情报助手{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-2xl font-bold text-gray-900">监控源管理</h2>
+  <button class="btn btn-primary" onclick="openModal()">+ 添加监控源</button>
+</div>
+
+<div class="space-y-4">
+  {% for s in sources %}
+  <div class="card">
+    <div class="flex items-start justify-between">
+      <div class="flex-1">
+        <div class="flex items-center gap-3">
+          <h3 class="text-lg font-semibold text-gray-900">{{ s.name }}</h3>
+          {% if s.is_active %}
+          <span class="badge badge-green">活跃</span>
+          {% else %}
+          <span class="badge badge-gray">已停用</span>
+          {% endif %}
+        </div>
+        <p class="text-sm text-gray-500 mt-1">{{ s.url }}</p>
+        {% if s.description %}
+        <p class="text-sm text-gray-600 mt-2">{{ s.description }}</p>
+        {% endif %}
+        <div class="flex items-center gap-4 mt-3 text-xs text-gray-400">
+          <span>关注栏目: {{ s.focus_areas | join('、') if s.focus_areas else '全部' }}</span>
+          <span>深度: {{ s.max_depth }} 级</span>
+          <span>采集天数: {{ s.time_range_days }} 天</span>
+          <span>最大条数: {{ s.max_items }} 条</span>
+          <span>定时: {{ s.schedule }}</span>
+          <span>采集规则: {{ '自定义' if s.crawl_rules else '默认' }}</span>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 ml-4">
+        <button class="btn btn-primary text-sm" id="triggerBtn-{{ s.id }}" onclick="triggerSource({{ s.id }}, '{{ s.name }}')">采集</button>
+        <button class="btn btn-secondary text-sm" onclick="editSource({{ s.id }})">编辑</button>
+        <button class="btn btn-danger text-sm" onclick="deleteSource({{ s.id }}, '{{ s.name }}')">删除</button>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Modal -->
+<div id="modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50" style="display:none;">
+  <div class="bg-white rounded-xl p-6 w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
+    <h3 id="modalTitle" class="text-lg font-bold mb-4">添加监控源</h3>
+    <form id="sourceForm" onsubmit="saveSource(event)">
+      <input type="hidden" id="sourceId" value="">
+      <div class="space-y-3">
+        <div>
+          <label class="form-label">名称</label>
+          <input class="form-input" id="f_name" required placeholder="如: 国家能源局">
+        </div>
+        <div>
+          <label class="form-label">URL</label>
+          <input class="form-input" id="f_url" required placeholder="https://www.nea.gov.cn/">
+        </div>
+        <div>
+          <label class="form-label">描述</label>
+          <input class="form-input" id="f_description" placeholder="可选">
+        </div>
+        <div>
+          <label class="form-label">关注栏目 (逗号分隔)</label>
+          <input class="form-input" id="f_focus" placeholder="政策法规、通知公告、工作动态">
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="form-label">最大探索深度</label>
+            <input class="form-input" id="f_depth" type="number" value="3" min="1" max="5">
+          </div>
+          <div>
+            <label class="form-label">定时 (Cron)</label>
+            <input class="form-input" id="f_schedule" value="0 9 * * 1" placeholder="0 9 * * 1">
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="form-label">采集天数 (1-90)</label>
+            <input class="form-input" id="f_time_range" type="number" value="7" min="1" max="90">
+          </div>
+          <div>
+            <label class="form-label">最大条数 (10-50)</label>
+            <input class="form-input" id="f_max_items" type="number" value="30" min="10" max="50">
+          </div>
+        </div>
+        <div>
+          <label class="form-label">
+            采集规则
+            <button type="button" class="text-xs text-blue-500 ml-2" onclick="resetCrawlRules()">恢复默认</button>
+          </label>
+          <textarea class="form-input w-full font-mono text-xs" id="f_crawl_rules" rows="12"
+                    placeholder="栏目筛选和内容优先级规则..."></textarea>
+          <p class="text-xs text-gray-400 mt-1">定义哪些栏目值得采集、哪些应跳过、内容优先级等。留空则使用默认规则。</p>
+        </div>
+      </div>
+      <div class="flex justify-end gap-3 mt-6">
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+        <button type="submit" class="btn btn-primary">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const DEFAULT_CRAWL_RULES = `## 栏目筛选规则
+
+### 优先采集的栏目类型
+- 本单位工作动态、要闻（如"局工作动态"、"部门新闻"）
+- 政策文件、法规（如"最新文件"、"政策法规"、"规范性文件"）
+- 新闻发布、数据发布（如"新闻发布"、"统计数据"）
+- 政策解读（如"解读回应"、"答记者问"）
+
+### 应排除的栏目类型
+- 名称含"派出机构"、"地方"、"区域"的栏目（地方性内容，价值较低）
+- 名称含"项目核准"、"审批"、"注册登记"的栏目（行政审批流程）
+- 名称含"留言"、"举报"、"互动"、"信访"、"咨询"的栏目（互动服务类）
+- 名称含"简介"、"指南"、"机构设置"、"领导信息"的栏目（静态信息页）
+- 名称含"年度报告"、"报表"的栏目（低频周期性文件）
+
+### 栏目数量限制
+- 最多选择5个栏目进行深入采集
+- 内容高度相似的栏目应合并（如"最新文件"和"通知"只选一个）
+
+### 内容优先级（从高到低）
+1. 国家层面重大政策（法律法规、国务院文件、部委规章）
+2. 高级领导人讲话、活动、人事变动
+3. 全国性会议、全国性新闻、全国性数据发布
+4. 行业报告、政策解读、标准规范
+5. 地方性通知、地方项目（低优先级）
+6. 地方监管局/监管办日常动态（最低优先级，一般跳过）`;
+
+function openModal(data) {
+  document.getElementById('modal').style.display = 'flex';
+  if (data) {
+    document.getElementById('modalTitle').textContent = '编辑监控源';
+    document.getElementById('sourceId').value = data.id;
+    document.getElementById('f_name').value = data.name;
+    document.getElementById('f_url').value = data.url;
+    document.getElementById('f_description').value = data.description || '';
+    document.getElementById('f_focus').value = (data.focus_areas || []).join('、');
+    document.getElementById('f_depth').value = data.max_depth || 3;
+    document.getElementById('f_schedule').value = data.schedule || '0 9 * * 1';
+    document.getElementById('f_time_range').value = data.time_range_days || 7;
+    document.getElementById('f_max_items').value = data.max_items || 30;
+    document.getElementById('f_crawl_rules').value = data.crawl_rules || '';
+  } else {
+    document.getElementById('modalTitle').textContent = '添加监控源';
+    document.getElementById('sourceForm').reset();
+    document.getElementById('sourceId').value = '';
+    document.getElementById('f_depth').value = 3;
+    document.getElementById('f_schedule').value = '0 9 * * 1';
+    document.getElementById('f_time_range').value = 7;
+    document.getElementById('f_max_items').value = 30;
+    document.getElementById('f_crawl_rules').value = DEFAULT_CRAWL_RULES;
+  }
+}
+
+function resetCrawlRules() {
+  document.getElementById('f_crawl_rules').value = DEFAULT_CRAWL_RULES;
+}
+function closeModal() { document.getElementById('modal').style.display = 'none'; }
+
+async function editSource(id) {
+  const res = await fetch(`/api/sources/${id}`);
+  const data = await res.json();
+  openModal(data);
+}
+
+async function saveSource(e) {
+  e.preventDefault();
+  const id = document.getElementById('sourceId').value;
+  const crawlRulesVal = document.getElementById('f_crawl_rules').value.trim();
+  const body = {
+    name: document.getElementById('f_name').value,
+    url: document.getElementById('f_url').value,
+    description: document.getElementById('f_description').value,
+    focus_areas: document.getElementById('f_focus').value.split(/[,、]/).map(s=>s.trim()).filter(Boolean),
+    max_depth: parseInt(document.getElementById('f_depth').value) || 3,
+    schedule: document.getElementById('f_schedule').value || '0 9 * * 1',
+    time_range_days: Math.min(90, Math.max(1, parseInt(document.getElementById('f_time_range').value) || 7)),
+    max_items: Math.min(50, Math.max(10, parseInt(document.getElementById('f_max_items').value) || 30)),
+    crawl_rules: crawlRulesVal || null,
+  };
+  const url = id ? `/api/sources/${id}` : '/api/sources';
+  const method = id ? 'PUT' : 'POST';
+  const res = await fetch(url, { method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  if (res.ok) { showToast('保存成功'); setTimeout(()=>location.reload(), 500); }
+  else { showToast('保存失败', 'error'); }
+}
+
+async function deleteSource(id, name) {
+  if (!confirm(`确定删除监控源「${name}」？`)) return;
+  const res = await fetch(`/api/sources/${id}`, { method: 'DELETE' });
+  if (res.ok) { showToast('已删除'); setTimeout(()=>location.reload(), 500); }
+  else { showToast('删除失败', 'error'); }
+}
+
+function setButtonLoading(id, loading) {
+  const btn = document.getElementById(`triggerBtn-${id}`);
+  if (!btn) return;
+  if (loading) {
+    btn.disabled = true;
+    btn.textContent = '采集中...';
+    btn.classList.remove('btn-primary');
+    btn.classList.add('btn-secondary');
+  } else {
+    btn.disabled = false;
+    btn.textContent = '采集';
+    btn.classList.remove('btn-secondary');
+    btn.classList.add('btn-primary');
+  }
+}
+
+async function triggerSource(id, name) {
+  if (!confirm(`确定对「${name}」执行手动采集？`)) return;
+  try {
+    const res = await fetch('/api/tasks/trigger', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ source_ids: [id] })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`「${name}」采集任务已启动`);
+      setButtonLoading(id, true);
+      pollRunningState();
+    } else {
+      showToast(data.detail || '启动失败', 'error');
+    }
+  } catch(e) {
+    showToast('请求失败', 'error');
+  }
+}
+
+let _pollTimer = null;
+async function pollRunningState() {
+  if (_pollTimer) return; // already polling
+  _pollTimer = setInterval(async () => {
+    try {
+      const res = await fetch('/api/tasks/running');
+      const data = await res.json();
+      const runningIds = new Set(data.running_source_ids || []);
+      // Update all trigger buttons
+      document.querySelectorAll('[id^="triggerBtn-"]').forEach(btn => {
+        const sid = parseInt(btn.id.replace('triggerBtn-', ''));
+        setButtonLoading(sid, runningIds.has(sid));
+      });
+      // Stop polling when nothing is running
+      if (!data.running) {
+        clearInterval(_pollTimer);
+        _pollTimer = null;
+      }
+    } catch(e) { /* ignore */ }
+  }, 3000);
+}
+
+// On page load, check if anything is running and set initial button states
+(async function() {
+  try {
+    const res = await fetch('/api/tasks/running');
+    const data = await res.json();
+    const runningIds = new Set(data.running_source_ids || []);
+    runningIds.forEach(sid => setButtonLoading(sid, true));
+    if (data.running) pollRunningState();
+  } catch(e) { /* ignore */ }
+})();
+</script>
+{% endblock %}

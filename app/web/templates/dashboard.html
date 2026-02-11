@@ -83,6 +83,9 @@
       <option value="desc">最新优先</option>
       <option value="asc">最早优先</option>
     </select>
+    <select id="filterTag" class="form-input" style="width:auto;min-width:120px" onchange="fetchResults()">
+      <option value="">全部标签</option>
+    </select>
   </div>
 
   <!-- Action bar -->
@@ -91,6 +94,8 @@
       <input type="checkbox" id="selectAll" onchange="toggleSelectAll()">
       <span>全选</span>
     </label>
+    <span id="totalCount" class="text-gray-500 font-medium"></span>
+    <span class="text-gray-300">|</span>
     <span id="selectedCount" class="text-gray-500">已选 0 条</span>
     <button class="btn btn-danger text-xs" id="batchDeleteBtn" onclick="batchDeleteResults()" style="display:none">批量删除</button>
     <button class="btn btn-danger text-xs" onclick="clearAllResults()">一键清空</button>
@@ -132,9 +137,11 @@ async function fetchResults() {
   const df = document.getElementById('filterDateFrom').value;
   const dt = document.getElementById('filterDateTo').value;
   const sort = document.getElementById('filterSort').value;
+  const tag = document.getElementById('filterTag').value;
   if (src) params.set('source_id', src);
   if (df) params.set('date_from', df);
   if (dt) params.set('date_to', dt);
+  if (tag) params.set('tag', tag);
   params.set('sort', sort);
   params.set('limit', '100');
 
@@ -148,18 +155,37 @@ async function fetchResults() {
   }
 }
 
+async function loadTags() {
+  try {
+    const res = await fetch('/api/results/tags');
+    const tags = await res.json();
+    const sel = document.getElementById('filterTag');
+    tags.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.tag;
+      opt.textContent = `${t.tag} (${t.count})`;
+      sel.appendChild(opt);
+    });
+  } catch(e) { /* ignore */ }
+}
+
 function renderResults() {
   const container = document.getElementById('resultsList');
+  document.getElementById('totalCount').textContent = `共 ${resultsData.length} 条`;
   if (!resultsData.length) {
     container.innerHTML = '<p class="text-gray-400">暂无采集内容</p>';
     updateSelectedCount();
     return;
   }
 
-  const typeMap = {news:'新闻', policy:'政策', notice:'通知', file:'文件'};
-  const badgeMap = {news:'badge-gray', policy:'badge-blue', notice:'badge-yellow', file:'badge-gray'};
+  const typeMap = {news:'新闻', policy:'政策', notice:'通知', file:'文件', local_dynamics:'地方动态'};
+  const badgeMap = {news:'badge-gray', policy:'badge-blue', notice:'badge-yellow', file:'badge-gray', local_dynamics:'badge-orange'};
 
-  container.innerHTML = resultsData.map(r => `
+  container.innerHTML = resultsData.map(r => {
+    const tagsHtml = (r.tags || []).map(t =>
+      `<span class="badge badge-blue cursor-pointer" style="font-size:11px;padding:1px 6px" onclick="filterByTag('${escHtml(t)}')">${escHtml(t)}</span>`
+    ).join('');
+    return `
     <div class="border-b border-gray-100 pb-4 last:border-0" data-id="${r.id}">
       <div class="flex items-start gap-2">
         <input type="checkbox" class="result-cb mt-1" value="${r.id}" onchange="onCheckChange()" ${selectedIds.has(r.id) ? 'checked' : ''}>
@@ -170,6 +196,7 @@ function renderResults() {
           <p class="font-medium text-gray-900">${escHtml(r.title)}</p>
           ${(r.summary && r.summary.trim() !== r.title.trim()) ? `<p class="text-sm text-gray-600 mt-1">${escHtml(r.summary.substring(0, 200))}${r.summary.length > 200 ? '...' : ''}</p>` : ''}
           <div class="flex items-center gap-3 mt-2 text-xs flex-wrap">
+            ${tagsHtml}
             ${r.source_name ? `<span class="text-gray-400">${escHtml(r.source_name)}</span>` : ''}
             ${r.crawled_at ? `<span class="text-gray-400">${r.crawled_at}</span>` : ''}
             <a href="${escHtml(r.url)}" target="_blank" class="text-blue-600 hover:underline">查看原文</a>
@@ -178,10 +205,16 @@ function renderResults() {
           </div>
         </div>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 
   updateSelectedCount();
+}
+
+function filterByTag(tag) {
+  const sel = document.getElementById('filterTag');
+  sel.value = tag;
+  fetchResults();
 }
 
 function escHtml(s) {
@@ -272,6 +305,9 @@ async function clearAllResults() {
 }
 
 // Load on page init
-document.addEventListener('DOMContentLoaded', fetchResults);
+document.addEventListener('DOMContentLoaded', () => {
+  fetchResults();
+  loadTags();
+});
 </script>
 {% endblock %}

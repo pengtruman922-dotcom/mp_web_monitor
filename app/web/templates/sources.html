@@ -4,7 +4,11 @@
 {% block content %}
 <div class="flex items-center justify-between mb-6">
   <h2 class="text-2xl font-bold text-gray-900">监控源管理</h2>
-  <button class="btn btn-primary" onclick="openModal()">+ 添加监控源</button>
+  <div class="flex items-center gap-2">
+    <button class="btn btn-primary btn-sm" id="triggerAllBtn" onclick="triggerAll()">全部采集</button>
+    <button class="btn btn-primary btn-sm" id="triggerSelectedBtn" onclick="triggerSelected()" style="display:none">采集选中项 (<span id="selectedSourceCount">0</span>)</button>
+    <button class="btn btn-primary btn-sm" onclick="openModal()">+ 添加监控源</button>
+  </div>
 </div>
 
 <div class="space-y-4">
@@ -13,6 +17,7 @@
     <div class="flex items-start justify-between">
       <div class="flex-1">
         <div class="flex items-center gap-3">
+          <input type="checkbox" class="source-cb" value="{{ s.id }}" onchange="onSourceCheckChange()">
           <h3 class="text-lg font-semibold text-gray-900">{{ s.name }}</h3>
           {% if s.is_active %}
           <span class="badge badge-green">活跃</span>
@@ -257,6 +262,77 @@ async function pollRunningState() {
       }
     } catch(e) { /* ignore */ }
   }, 3000);
+}
+
+// --- Multi-select trigger ---
+function onSourceCheckChange() {
+  const checked = document.querySelectorAll('.source-cb:checked');
+  const btn = document.getElementById('triggerSelectedBtn');
+  btn.style.display = checked.length > 0 ? '' : 'none';
+  const count = document.getElementById('selectedSourceCount');
+  if (count) count.textContent = checked.length;
+}
+
+async function triggerAll() {
+  if (!confirm('确定对全部活跃监控源执行采集？')) return;
+  const btn = document.getElementById('triggerAllBtn');
+  btn.disabled = true;
+  const origText = btn.textContent;
+  btn.textContent = '启动中...';
+  try {
+    const res = await fetch('/api/tasks/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_ids: null }),
+    });
+    if (res.ok) {
+      showToast('已触发全部采集');
+      pollRunningState();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showToast(err.detail || '触发失败', 'error');
+    }
+  } catch (e) {
+    showToast('请求失败', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+}
+
+async function triggerSelected() {
+  const ids = Array.from(document.querySelectorAll('.source-cb:checked')).map(cb => Number(cb.value));
+  if (!ids.length) return;
+  if (!confirm(`确定对选中的 ${ids.length} 个监控源执行采集？`)) return;
+  const btn = document.getElementById('triggerSelectedBtn');
+  btn.disabled = true;
+  const origHtml = btn.innerHTML;
+  btn.textContent = '启动中...';
+  try {
+    const res = await fetch('/api/tasks/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_ids: ids }),
+    });
+    if (res.ok) {
+      showToast(`已触发 ${ids.length} 个源的采集`);
+      // Restore button HTML before calling onSourceCheckChange (which needs the span)
+      btn.innerHTML = origHtml;
+      btn.disabled = false;
+      // Uncheck all and hide button
+      document.querySelectorAll('.source-cb').forEach(cb => cb.checked = false);
+      onSourceCheckChange();
+      pollRunningState();
+      return;
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showToast(err.detail || '触发失败', 'error');
+    }
+  } catch (e) {
+    showToast('请求失败', 'error');
+  }
+  btn.innerHTML = origHtml;
+  btn.disabled = false;
 }
 
 // On page load, check if anything is running and set initial button states

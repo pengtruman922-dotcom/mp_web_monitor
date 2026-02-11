@@ -19,11 +19,28 @@ logging.basicConfig(
 )
 
 
+async def _cleanup_stale_tasks():
+    """Mark any 'running' tasks as cancelled on startup (stale from previous crash)."""
+    from app.database.connection import async_session
+    from app.models.task import CrawlTask, TaskStatus
+    from sqlalchemy import update
+    async with async_session() as db:
+        result = await db.execute(
+            update(CrawlTask)
+            .where(CrawlTask.status == TaskStatus.running.value)
+            .values(status=TaskStatus.cancelled.value, error_log="服务器重启导致任务中断")
+        )
+        if result.rowcount:
+            await db.commit()
+            logging.getLogger(__name__).info("Cleaned up %d stale running tasks", result.rowcount)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
     await seed_default_data()
+    await _cleanup_stale_tasks()
     await init_scheduler()
     logging.getLogger(__name__).info("Application started")
     yield

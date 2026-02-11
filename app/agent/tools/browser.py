@@ -94,19 +94,43 @@ async def browse_page(url: str) -> str:
                 let date = '';
                 const li = el.closest('li') || el.parentElement;
                 if (li) {
-                    const m = li.textContent.match(/(\d{4}[-年.\/]\d{1,2}[-月.\/]\d{1,2})/);
+                    const liText = li.textContent;
+                    // Pattern 1: YYYY-MM-DD, YYYY年M月D日, YYYY.M.D, YYYY/M/D
+                    const m = liText.match(/(\d{4}[-年.\/]\d{1,2}[-月.\/]\d{1,2})日?/);
                     if (m) {
-                        date = m[1].replace(/[年月]/g, '-').replace(/\//g, '-');
+                        date = m[1].replace(/[年月日]/g, '-').replace(/\//g, '-').replace(/-$/, '');
                         const parts = date.split('-');
                         if (parts.length === 3) {
                             date = parts[0] + '-' + parts[1].padStart(2, '0') + '-' + parts[2].padStart(2, '0');
                         }
                     }
+                    // Pattern 2: standalone 8-digit date like 20260130
+                    if (!date) {
+                        const m2 = liText.match(/(?:^|[^\d])(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[^\d]|$)/);
+                        if (m2) {
+                            date = m2[1] + '-' + m2[2] + '-' + m2[3];
+                        }
+                    }
                 }
                 if (!date && href) {
-                    const um = href.match(/\/(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\//);
+                    // URL pattern 1: /YYYYMMDD/ (with trailing slash)
+                    let um = href.match(/\/(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\//);
+                    // URL pattern 2: /tYYYYMMDD_ (common on gov.cn)
+                    if (!um) um = href.match(/\/t(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])_/);
+                    // URL pattern 3: /WYYYYMMDD (used by some ministries)
+                    if (!um) um = href.match(/\/W(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])/);
+                    // URL pattern 4: /art/YYYY/M/D/ or /art/YYYY/MM/DD/
+                    if (!um) {
+                        const am = href.match(/\/art\/(20\d{2})\/(\d{1,2})\/(\d{1,2})\//);
+                        if (am) um = am;
+                    }
+                    // URL pattern 5: /YYYY-MM/DD/ or /YYYY-MM/t...
+                    if (!um) {
+                        const dm = href.match(/\/(20\d{2})[-\/](0[1-9]|1[0-2])\/(?:t?)(\d{2})/);
+                        if (dm) um = dm;
+                    }
                     if (um) {
-                        date = um[1] + '-' + um[2] + '-' + um[3];
+                        date = um[1] + '-' + um[2].padStart(2, '0') + '-' + um[3].padStart(2, '0');
                     }
                 }
                 return { text, href, date };
@@ -143,6 +167,9 @@ async def browse_page(url: str) -> str:
             text += "你可以用 save_results_batch 工具一次性保存以下条目（筛选日期范围内的）：\n"
             text += _json.dumps(items_for_save, ensure_ascii=False, indent=None)
             text += "\n"
+        elif links and len(links) > 3:
+            # Page has links but none with extractable dates — signal to agent
+            text += "\n\n注意：此页面未检测到带日期的条目。如果连续多页无日期条目，建议调用 finish 结束当前栏目。\n"
 
         return text
     except Exception as e:

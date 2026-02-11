@@ -21,5 +21,6 @@ class CrawlResult(Base):
     attachment_type: Mapped[str] = mapped_column(String(20), default="")  # pdf/doc/docx/xlsx
     attachment_path: Mapped[str] = mapped_column(String(1000), default="")
     attachment_summary: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[str] = mapped_column(String(500), default="")  # comma-separated keyword tags
     published_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     crawled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

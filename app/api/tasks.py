@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.connection import get_db
 from app.models.task import CrawlTask, TaskStatus
 from app.models.result import CrawlResult
-from app.agent.orchestrator import run_batch, is_running, get_running_sources, request_cancel, release_source
+from app.agent.orchestrator import run_batch, is_running, get_running_sources, request_cancel, release_source, _section_history
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -132,6 +132,14 @@ async def cancel_task(task_id: int, db: AsyncSession = Depends(get_db)):
     release_source(task.source_id)
 
     return {"ok": True, "source_id": task.source_id}
+
+
+@router.post("/clear-section-history")
+async def clear_section_history():
+    """Clear section history for all sources (useful for testing)."""
+    count = len(_section_history)
+    _section_history.clear()
+    return {"ok": True, "cleared_sources": count}
 
 
 @router.delete("/clear-finished")

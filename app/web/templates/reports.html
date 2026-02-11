@@ -69,7 +69,11 @@ function renderReports() {
       <input type="checkbox" class="report-cb" value="${r.id}" onchange="onCheckChange()" ${selectedIds.has(r.id) ? 'checked' : ''}>
       <a href="/reports/${r.id}" class="flex-1 min-w-0">
         <h3 class="font-semibold text-gray-900">${escHtml(r.title)}</h3>
-        <p class="text-sm text-gray-400 mt-1">生成于 ${r.generated_at || '未知'}</p>
+        <div class="flex flex-wrap items-center gap-2 mt-1">
+          ${(r.source_names || []).map(n => `<span class="badge badge-blue">${escHtml(n)}</span>`).join('')}
+          ${r.total_items ? `<span class="text-xs text-gray-500">${r.total_items} 条内容</span>` : ''}
+          <span class="text-xs text-gray-400">生成于 ${r.generated_at || '未知'}</span>
+        </div>
       </a>
       <button class="text-red-500 hover:text-red-700 text-sm" onclick="deleteSingleReport(${r.id})">🗑️</button>
       <a href="/reports/${r.id}">

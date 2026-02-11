@@ -30,6 +30,30 @@ _running_sources: set[int] = set()
 # task_id -> asyncio.Event, set() means cancellation requested
 _cancel_flags: dict[int, asyncio.Event] = {}
 
+# Section history: track consecutive empty runs per section
+# source_id -> {section_url -> consecutive_empty_count}
+_section_history: dict[int, dict[str, int]] = {}
+_SECTION_SKIP_THRESHOLD = 3  # skip section after N consecutive empty runs
+
+# Max sections to identify and crawl
+MAX_SECTIONS = 5
+
+# Regex for leading date pattern like "2026-02-06 "
+_LEADING_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}\s*')
+
+
+def _clean_title(title: str) -> str:
+    """Clean a title by removing embedded dates and extra whitespace/newlines."""
+    if not title:
+        return title
+    # Replace newlines with spaces
+    title = title.replace('\n', ' ').replace('\r', ' ')
+    # Strip leading date patterns like "2026-02-06 "
+    title = _LEADING_DATE_RE.sub('', title)
+    # Strip whitespace
+    title = title.strip()
+    return title
+
 
 def request_cancel(task_id: int):
     """Mark a task for cancellation (called from the API layer)."""
@@ -184,6 +208,7 @@ def _extract_homepage_items(
     page_text: str,
     date_start: str,
     date_end: str,
+    source_url: str = "",
 ) -> list[dict]:
     """Extract directly-harvestable items from browse_page output (no LLM).
 
@@ -234,7 +259,30 @@ def _extract_homepage_items(
         # Items without date are kept (may be relevant)
         filtered.append(item)
 
+    # Domain filtering: remove cross-domain (reposted) items
+    if source_url and filtered:
+        from app.agent.domain_filter import filter_by_domain
+        before = len(filtered)
+        filtered = filter_by_domain(filtered, source_url)
+        if len(filtered) < before:
+            logger.info("Homepage domain filter: %d -> %d items", before, len(filtered))
+
     return filtered
+
+
+# Regex pattern for detecting local regulatory bureau dynamics in titles
+_LOCAL_DYNAMICS_RE = re.compile(
+    r"^(?:华北|华东|华中|南方|东北|西北|山东|江苏|浙江|广东|福建|四川|"
+    r"湖南|湖北|河南|河北|安徽|江西|云南|贵州|陕西|甘肃|山西|辽宁|吉林|"
+    r"黑龙江|广西|海南|内蒙古|新疆|西藏|青海|宁夏|重庆|天津|上海|北京)"
+    r"(?:省|市|自治区)?"
+    r"(?:能源监管局|能源监管办|发改委|发展改革委|经信委|工信厅|能源局)"
+)
+
+
+def _is_local_dynamics(title: str) -> bool:
+    """Check if a title matches local regulatory bureau dynamics pattern."""
+    return bool(_LOCAL_DYNAMICS_RE.search(title))
 
 
 async def _filter_homepage_items(
@@ -242,34 +290,73 @@ async def _filter_homepage_items(
     crawl_rules: str,
     on_progress=None,
 ) -> list[dict]:
-    """Use LLM to filter homepage items by crawl_rules, removing low-value content.
+    """Use regex pre-filter + LLM to filter homepage items, removing low-value content.
+
+    Two-stage filtering:
+    1. Regex pre-annotation: mark items whose titles match local bureau patterns
+    2. LLM filtering with few-shot examples for accurate classification
 
     Returns a subset of items that pass the quality filter.
-    Falls back to returning all items on failure.
+    Falls back to regex-only filtering on LLM failure.
     """
     if len(items) <= 3:
         return items
 
+    # Stage 1: Regex pre-annotation
+    local_flags = []
+    for item in items:
+        title = item.get("title", "")
+        local_flags.append(_is_local_dynamics(title))
+
+    local_count = sum(local_flags)
+    logger.info("Homepage filter: %d/%d items flagged as local dynamics by regex",
+                local_count, len(items))
+
+    # If no local dynamics detected, skip LLM filtering
+    if local_count == 0:
+        return items
+
+    # Stage 2: LLM filtering with enhanced prompt and few-shot examples
     lines = []
     for i, item in enumerate(items):
         title = item.get("title", "")
         url = item.get("url", "")[:80]
         date = item.get("published_date", "")
-        lines.append(f"[{i}] {date} | {title} | {url}")
+        tag = " [疑似地方]" if local_flags[i] else ""
+        lines.append(f"[{i}] {date} | {title}{tag} | {url}")
 
     items_text = "\n".join(lines)
 
-    system = "你是政策信息筛选专家，服务于咨询公司行业顾问。请严格按照规则筛选高价值条目。"
+    system = (
+        "你是政策信息筛选专家，服务于咨询公司行业顾问。"
+        "你的核心任务是过滤掉地方监管局的日常工作动态，只保留全国性、国家级的高价值内容。"
+    )
     user = (
-        f"请根据以下采集规则，从首页提取的 {len(items)} 条条目中筛选出值得保留的高价值内容。\n\n"
+        f"请从以下 {len(items)} 条条目中，筛选出值得保留的高价值内容。\n\n"
+        f"## 过滤规则（必须严格执行）\n\n"
+        f"### 必须过滤的内容（地方监管动态）\n"
+        f"标题以地方机构名开头的条目属于地方监管动态，应当过滤：\n"
+        f"- 地方机构前缀：华北、华东、华中、南方、东北、西北 + 能源监管局/监管办\n"
+        f"- 省级机构：XX省发改委、XX省能源局、XX市XX局\n"
+        f"- 标记为 [疑似地方] 的条目大概率应过滤\n\n"
+        f"过滤示例：\n"
+        f'- "华北能源监管局强化河北南网电力保供监管" → 过滤\n'
+        f'- "华东能源监管局赴江苏能源监管办开展调研" → 过滤\n'
+        f'- "南方能源监管局召开安全生产例会" → 过滤\n'
+        f'- "山东能源监管办开展春节保供电检查" → 过滤\n'
+        f'- "东北能源监管局组织召开辽宁电力市场座谈会" → 过滤\n\n'
+        f"### 必须保留的内容（全国性高价值）\n"
+        f"- 国家级机构发布：国家能源局、国务院、部委等\n"
+        f"- 高级领导人活动：习近平、国务院总理、部长级\n"
+        f"- 全国性数据/会议/政策\n\n"
+        f"保留示例：\n"
+        f'- "国家能源局新闻发布会文字实录" → 保留\n'
+        f'- "国家能源局发布全国电力统计数据" → 保留\n'
+        f'- "习近平同越共中央总书记通电话" → 保留\n'
+        f'- "2025年度能源行业十大科技创新成果" → 保留\n\n'
         f"## 采集规则\n{crawl_rules}\n\n"
         f"## 条目列表\n{items_text}\n\n"
-        f"筛选要求：\n"
-        f"- 排除地方监管局/监管办的日常工作动态\n"
-        f"- 保留国家层面政策、高层领导活动、全国性新闻数据\n"
-        f"- 不确定的条目应保留\n"
-        f"- 返回保留的编号JSON数组，如 [0, 3, 5]\n"
-        f"- 直接输出JSON，不加其他内容"
+        f"请返回保留的编号JSON数组，如 [0, 3, 5]。直接输出JSON，不加其他内容。"
     )
 
     try:
@@ -285,16 +372,74 @@ async def _filter_homepage_items(
             if isinstance(indices, list):
                 valid = [i for i in indices if isinstance(i, int) and 0 <= i < len(items)]
                 if valid:
+                    # Safety: if filter is too aggressive (< 3 items), keep all non-local items
+                    if len(valid) < 3:
+                        non_local = [i for i in range(len(items)) if not local_flags[i]]
+                        valid = sorted(set(valid + non_local))
                     if on_progress:
                         await on_progress(
                             f"Phase 1a: 质量筛选 {len(items)} → {len(valid)} 条"
+                            f"（正则标记 {local_count} 条地方动态）"
                         )
-                    logger.info("Homepage filter: %d -> %d items", len(items), len(valid))
+                    logger.info("Homepage filter: %d -> %d items (regex flagged %d local)",
+                                len(items), len(valid), local_count)
                     return [items[i] for i in valid]
     except (json.JSONDecodeError, Exception) as e:
-        logger.warning("Homepage item filtering failed, keeping all: %s", e)
+        logger.warning("Homepage item filtering LLM failed, applying regex-only filter: %s", e)
+
+    # Fallback: use regex-only filtering when LLM fails or returns invalid result
+    non_local = [item for item, is_local in zip(items, local_flags) if not is_local]
+    if non_local:
+        logger.info("Homepage filter (regex fallback): %d -> %d items", len(items), len(non_local))
+        return non_local
 
     return items
+
+
+def _merge_similar_sections(sections: list[dict]) -> list[dict]:
+    """Merge sections that share a common URL path prefix.
+
+    E.g., /zcfg/zxwj/, /zcfg/tz/, /zcfg/gg/ -> single /zcfg/ entry.
+    This prevents crawling many sub-categories of the same parent section.
+    """
+    if len(sections) <= MAX_SECTIONS:
+        return sections
+
+    from urllib.parse import urlparse
+
+    # Group by 2-level path prefix (e.g., /zcfg/xxx -> /zcfg)
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for s in sections:
+        url = s.get("url", "")
+        parsed = urlparse(url)
+        parts = [p for p in parsed.path.strip("/").split("/") if p]
+        # Use first path segment as group key (e.g., "zcfg", "gzdt", "xwfb")
+        prefix = parts[0] if parts else ""
+        key = f"{parsed.scheme}://{parsed.netloc}/{prefix}"
+        groups[key].append(s)
+
+    merged = []
+    for key, group in groups.items():
+        if len(group) == 1:
+            merged.append(group[0])
+        else:
+            # Multiple sub-sections share a parent path.
+            # Keep the one with the shortest URL (likely the parent listing page).
+            # If URLs are same length, keep the first one.
+            parent = min(group, key=lambda s: len(s.get("url", "")))
+            # Use a combined name to indicate merged sections
+            names = [s.get("name", "") for s in group]
+            if len(names) > 2:
+                parent["name"] = f"{names[0]}等{len(names)}个子栏目"
+            logger.info("Merged %d sub-sections under %s: %s",
+                        len(group), parent.get("url"), [s.get("name") for s in group])
+            merged.append(parent)
+
+    # Hard cap
+    if len(merged) > MAX_SECTIONS:
+        merged = merged[:MAX_SECTIONS]
+
+    return merged
 
 
 async def _identify_sections(
@@ -327,11 +472,16 @@ async def _identify_sections(
         f"以下是 {source.name}（{source.url}）首页的链接列表。\n"
         f"请从中找出值得深入采集的栏目列表页链接。\n\n"
         f"## 栏目筛选规则（请严格遵守）\n{crawl_rules}\n\n"
+        f"## 数量限制（非常重要）\n"
+        f"- 最多返回 {MAX_SECTIONS} 个栏目，优先选择高价值栏目\n"
+        f"- 内容高度相似的栏目必须合并：如果一个大栏目下有多个子栏目（如\"政策\"下有\"最新文件\"\"通知\"\"公告\"等），只返回大栏目的入口URL，不要分别列出每个子栏目\n"
+        f"- 排除地方性栏目（名称含\"派出\"\"地方\"\"区域\"的栏目）\n"
+        f"- 排除互动服务类栏目（名称含\"留言\"\"举报\"\"互动\"\"信访\"\"咨询\"）\n"
+        f"- 排除静态信息栏目（名称含\"简介\"\"指南\"\"机构设置\"\"领导信息\"）\n\n"
         f"要求：\n"
         f"- 返回JSON数组：[{{\"name\": \"栏目名\", \"url\": \"列表页完整URL\"}}]\n"
         f"- 只返回能进入文章列表的栏目页链接（如 /zcfg/、/tzgg/、/gzdt/ 等栏目入口），不要具体文章详情链接\n"
         f"- 栏目入口URL通常较短、不含日期，文章URL通常较长、含日期路径\n"
-        f"- 如果找到多个匹配栏目，都列出来\n"
         f"- 直接输出JSON，不加其他内容\n\n"
         f"链接列表：\n{link_section}"
     )
@@ -350,9 +500,16 @@ async def _identify_sections(
         if isinstance(sections, list) and sections:
             valid = [s for s in sections if isinstance(s, dict) and s.get("url")]
             if valid:
+                raw_count = len(valid)
+                # Post-processing: merge similar sections and enforce hard cap
+                valid = _merge_similar_sections(valid)
                 if on_progress:
-                    await on_progress(f"Phase 1a: 发现 {len(valid)} 个栏目")
-                logger.info("[%s] Homepage navigation found %d sections", source.name, len(valid))
+                    msg = f"Phase 1a: 发现 {raw_count} 个栏目"
+                    if len(valid) < raw_count:
+                        msg += f"，合并/精简为 {len(valid)} 个"
+                    await on_progress(msg)
+                logger.info("[%s] Homepage navigation: %d raw -> %d after merge (max %d)",
+                            source.name, raw_count, len(valid), MAX_SECTIONS)
                 return valid
     except (json.JSONDecodeError, Exception) as e:
         logger.warning("[%s] Homepage navigation LLM parse failed: %s", source.name, e)
@@ -421,18 +578,30 @@ async def _crawl_all_sections(
                 system_prompt=section_prompt,
                 user_message=user_msg,
                 tools=CRAWLER_TOOLS,
-                max_turns=15,
+                max_turns=20,
                 enable_pruning=True,
+                crawl_rules=crawl_rules,
             )
 
             # Collect items and update URL set for next section
+            section_item_count = 0
             for item in agent_result.items:
                 url = item.get("url", "")
                 if url and url not in collected_urls:
                     collected_urls.add(url)
                     all_items.append(item)
+                    section_item_count += 1
 
-            logger.info("[%s] Section '%s': %d items", source.name, section_name, len(agent_result.items))
+            # Record section history (consecutive empty count)
+            if source.id not in _section_history:
+                _section_history[source.id] = {}
+            if section_item_count > 0:
+                _section_history[source.id][section_url] = 0  # reset on success
+            else:
+                prev = _section_history[source.id].get(section_url, 0)
+                _section_history[source.id][section_url] = prev + 1
+
+            logger.info("[%s] Section '%s': %d items", source.name, section_name, section_item_count)
 
         except Exception as e:
             logger.error("[%s] Section '%s' agent failed: %s", source.name, section_name, e)
@@ -450,6 +619,31 @@ async def _crawl_all_sections(
 ##############################################################################
 # Phase 2: Summary agent — concurrent simple_completion per item
 ##############################################################################
+
+def _parse_summary_and_tags(raw: str) -> tuple[str, str]:
+    """Parse LLM response into (summary, comma_separated_tags).
+
+    Expected format:
+        摘要正文...
+        标签：关键词1,关键词2,关键词3
+    """
+    lines = raw.strip().split("\n")
+    tags = ""
+    summary_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("标签：") or stripped.startswith("标签:"):
+            tag_part = stripped.split("：", 1)[-1] if "：" in stripped else stripped.split(":", 1)[-1]
+            # Normalize separators: 、 or space to comma
+            tag_part = tag_part.replace("、", ",").replace(" ", ",")
+            # Clean up: remove empty, strip whitespace, deduplicate
+            tag_list = [t.strip() for t in tag_part.split(",") if t.strip()]
+            tags = ",".join(dict.fromkeys(tag_list))  # deduplicate preserving order
+        else:
+            summary_lines.append(line)
+    summary = "\n".join(summary_lines).strip()
+    return summary, tags
+
 
 async def _summarize_items(
     items: list[dict],
@@ -472,7 +666,8 @@ async def _summarize_items(
     sem = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
     summary_system = (
         "你是政策情报分析师，服务于咨询公司的行业顾问团队。\n"
-        "请根据提供的文章正文撰写一段简明摘要，帮助顾问快速了解文章核心内容。"
+        "请根据提供的文章正文撰写一段简明摘要，准确判断内容类型（content_type），并提取与文章核心主题直接相关的关键词标签。\n"
+        "标签必须紧扣文章实际内容所属的行业领域和具体议题，不要套用与文章无关的热门标签。"
     )
 
     async def _process_one(item, idx):
@@ -493,31 +688,75 @@ async def _summarize_items(
                     return
 
                 user_prompt = (
-                    f"请为以下文章撰写摘要。\n\n"
+                    f"请为以下文章撰写摘要、判断内容类型并提取关键词标签。\n\n"
                     f"要求：\n"
-                    f"- 2-3句话，100-200字\n"
-                    f"- 提炼核心政策要点、关键数据或主要措施\n"
-                    f"- 不要重复标题内容\n"
-                    f"- 直接输出摘要，不加前缀\n\n"
-                    f"标题：{title}\n\n"
+                    f"- 摘要：2-3句话，100-200字，提炼核心政策要点、关键数据或主要措施，不要重复标题\n"
+                    f"- 内容类型（content_type）：根据文章性质准确判断，只能选以下之一：\n"
+                    f"  - policy：法律法规、国务院令、部委规章、条例、管理办法、指导意见、实施方案\n"
+                    f"  - notice：通知、公告、培训班通知、会议通知、人事任免、招标公告、公示\n"
+                    f"  - news：一般新闻报道、评论、分析、领导讲话、会议报道、工作动态\n"
+                    f"  - file：报告、白皮书、数据发布、统计公报、研究成果、规划文本\n"
+                    f"- 标签：2-3个与文章核心主题直接相关的关键词标签（如行业领域、政策类型、具体议题），"
+                    f"避免过于宽泛的标签。标签应反映文章来源网站的领域特征，"
+                    f"例如教育培训类网站的文章应使用继续教育、培训管理、学历提升等标签，"
+                    f"而非国企改革、人事等无关标签\n\n"
+                    f"输出格式（严格遵守）：\n"
+                    f"content_type: policy/notice/news/file\n"
+                    f"摘要正文内容...\n"
+                    f"标签：关键词1,关键词2,关键词3\n\n"
+                    f"标题：{title}\n"
+                    f"来源URL：{url}\n\n"
                     f"正文：\n{page_text[:6000]}"
                 )
 
-                summary = await simple_completion(
+                raw = await simple_completion(
                     user_prompt, system=summary_system, temperature=0.2, max_tokens=512
                 )
-                summary = summary.strip()
+                raw = raw.strip()
+
+                # Extract content_type line before parsing summary/tags
+                content_type = None
+                ct_lines = []
+                for _line in raw.split("\n"):
+                    _stripped = _line.strip()
+                    if _stripped.lower().startswith("content_type:"):
+                        ct_val = _stripped.split(":", 1)[1].strip().lower()
+                        if ct_val in ("policy", "notice", "news", "file"):
+                            content_type = ct_val
+                    else:
+                        ct_lines.append(_line)
+                raw_for_parse = "\n".join(ct_lines)
+
+                # Parse tags from response
+                summary, tags = _parse_summary_and_tags(raw_for_parse)
 
                 # Validate
                 if not summary or summary == title.strip() or len(summary) < 20:
                     # Retry once
-                    summary = await simple_completion(
+                    raw = await simple_completion(
                         user_prompt, system=summary_system, temperature=0.3, max_tokens=512
                     )
-                    summary = summary.strip()
+                    raw = raw.strip()
+
+                    # Re-extract content_type from retry
+                    ct_lines = []
+                    for _line in raw.split("\n"):
+                        _stripped = _line.strip()
+                        if _stripped.lower().startswith("content_type:"):
+                            ct_val = _stripped.split(":", 1)[1].strip().lower()
+                            if ct_val in ("policy", "notice", "news", "file"):
+                                content_type = ct_val
+                        else:
+                            ct_lines.append(_line)
+                    raw_for_parse = "\n".join(ct_lines)
+                    summary, tags = _parse_summary_and_tags(raw_for_parse)
 
                 if summary and summary != title.strip() and len(summary) >= 20:
                     item["summary"] = summary
+                    if tags:
+                        item["tags"] = tags
+                    if content_type:
+                        item["content_type"] = content_type
             except Exception as e:
                 logger.warning("Summary failed for %s: %s", url, e)
 
@@ -530,6 +769,15 @@ async def _summarize_items(
     if on_progress:
         await on_progress(f"Phase 2: 完成，{generated}/{len(needs_summary)} 条摘要生成成功")
     logger.info("Phase 2 done: %d/%d summaries generated", generated, len(needs_summary))
+
+    # Fallback: generate tags from title if LLM didn't provide any
+    for item in items:
+        if not item.get("tags"):
+            title = item.get("title", "")
+            # Simple keyword extraction from title
+            keywords = [w for w in re.split(r'[，,、：:|\s]+', title) if len(w) >= 2 and len(w) <= 8][:3]
+            if keywords:
+                item["tags"] = ",".join(keywords)
 
 
 ##############################################################################
@@ -686,7 +934,9 @@ async def _run_single_source(source: MonitorSource, task_id: int, batch_id: str)
             homepage_text = ""
 
         # Step 1: Extract directly-harvestable items (pure code, no LLM)
-        homepage_items = _extract_homepage_items(homepage_text, date_start, date_end) if homepage_text else []
+        # Disable domain filter if crawl_rules allow cross-domain content
+        effective_source_url = "" if "允许跨域" in crawl_rules else source.url
+        homepage_items = _extract_homepage_items(homepage_text, date_start, date_end, source_url=effective_source_url) if homepage_text else []
 
         # Step 2: Identify sections via LLM (with crawl_rules injection)
         sections = await _identify_sections(homepage_text, source, on_progress=_on_progress) if homepage_text else [{"name": source.name, "url": source.url}]
@@ -711,7 +961,21 @@ async def _run_single_source(source: MonitorSource, task_id: int, batch_id: str)
             sections_to_crawl = []
             await _on_progress("Phase 1b: 首页条目已足够，跳过栏目补充采集")
         else:
-            sections_to_crawl = sections[:3]  # At most 3 supplementary sections
+            # Filter out sections that yielded 0 items in previous runs
+            # Only apply when sections were identified by LLM (not the fallback path)
+            history = _section_history.get(source.id, {})
+            if history and homepage_text:
+                before_filter = len(sections)
+                sections = [
+                    s for s in sections
+                    if history.get(s.get("url", ""), 0) < _SECTION_SKIP_THRESHOLD
+                ]
+                skipped = before_filter - len(sections)
+                if skipped > 0:
+                    logger.info("[%s] Skipped %d sections (empty %d+ consecutive runs)", source.name, skipped, _SECTION_SKIP_THRESHOLD)
+                    await _on_progress(f"Phase 1b: 跳过 {skipped} 个连续无数据栏目")
+
+            sections_to_crawl = sections[:MAX_SECTIONS]
             await _on_progress(f"Phase 1b: 补充采集 {len(sections_to_crawl)} 个栏目")
 
         section_items = []
@@ -733,13 +997,23 @@ async def _run_single_source(source: MonitorSource, task_id: int, batch_id: str)
         all_items = homepage_items + section_items
         existing_url_set = set(u.replace("http://", "https://") for u in existing_urls)
         seen_urls = set()
+        seen_titles = set()
         deduped_items = []
+        from app.agent.domain_filter import is_same_domain
         for item in all_items:
             url = item.get("url", "")
             norm_url = url.replace("http://", "https://")
             if norm_url in existing_url_set or norm_url in seen_urls:
                 continue
+            if url and effective_source_url and not is_same_domain(url, effective_source_url):
+                continue
+            # Title-based dedup
+            norm_title = item.get("title", "").strip().lower()
+            if norm_title and norm_title in seen_titles:
+                continue
             seen_urls.add(norm_url)
+            if norm_title:
+                seen_titles.add(norm_title)
             deduped_items.append(item)
 
         # Trim to max_items
@@ -781,10 +1055,11 @@ async def _run_single_source(source: MonitorSource, task_id: int, batch_id: str)
                 cr = CrawlResult(
                     task_id=task_id,
                     source_id=source.id,
-                    title=item["title"],
+                    title=_clean_title(item["title"]),
                     url=item["url"],
                     content_type=item.get("content_type", "news"),
                     summary=item.get("summary", ""),
+                    tags=item.get("tags", ""),
                     has_attachment=item.get("has_attachment", False),
                     attachment_name=item.get("attachment_name", ""),
                     attachment_type=item.get("attachment_type", ""),
@@ -819,50 +1094,56 @@ async def _run_single_source(source: MonitorSource, task_id: int, batch_id: str)
 
 async def _generate_overview(by_source: dict[str, list[CrawlResult]]) -> str:
     """Use LLM to generate a structured overview of all results."""
-    # Build a condensed summary of all items for the LLM
+    # Dynamic per-source limit to keep total items manageable
+    total_items = sum(len(items) for items in by_source.values())
+    per_source_limit = 60 // max(len(by_source), 1) if total_items > 60 else 999
+
     summary_parts = []
     for src_name, items in by_source.items():
         summary_parts.append(f"【{src_name}】共{len(items)}条:")
-        for item in items[:20]:  # Limit to avoid token overflow
+        for item in items[:per_source_limit]:
             line = f"- [{item.content_type}] {item.title}"
+            if item.published_date:
+                line += f" ({item.published_date})"
             if item.summary:
-                line += f": {item.summary[:150]}"
+                line += f": {item.summary[:200]}"
             summary_parts.append(line)
 
     all_summaries = "\n".join(summary_parts)
 
+    today = datetime.now().strftime('%Y年%m月%d日')
+
     system = (
         "你是咨询公司高级行业顾问，擅长撰写结构清晰、重点突出的政策情报简报。"
         "你的读者是企业高管和行业分析师，他们需要快速把握政策风向和行业动态。"
+        "你善于从多条信息中归纳趋势，而非简单罗列事实。"
     )
 
-    prompt = f"""请根据以下采集条目，撰写一份结构化的政策情报概述（300-600字）。
+    prompt = f"""今天是{today}。请根据以下采集条目，撰写一份结构化的政策情报概述（300-600字）。
 
-按以下模板输出（## 标题独占一行，正文另起一行，段落之间空一行）：
+请按以下步骤思考（不要输出思考过程，只输出最终概述）：
+1. 通读所有条目，识别高频关键词和重复出现的主题
+2. 归纳出2-5个核心主题，多个条目指向同一趋势时合并论述
+3. 为每个主题自由拟定一个精练的section标题
+4. 撰写概述
 
-## 核心要点
+结构要求：
+- 第一个section固定为"## 核心要点"，用1-2句话点明本期最重要的趋势信号和方向判断
+- 后续2-4个section由你根据内容自由拟定标题（不要硬套模板）
+- 如果内容集中在一两个主题，不要硬造section，宁少勿滥
 
-1-2句话点明本期最重要的政策信号或行业变化。
+可参考的主题方向（仅供启发，不必照搬）：重大政策信号/行业数据与趋势/监管执行动态/国际合作/人事变动/科技创新/能源安全/市场改革
 
-## 重大政策动向
-
-如有国家级政策、法规、规划，阐述其要点和影响（2-3句话）。
-
-## 行业数据与趋势
-
-如有统计数据发布、行业里程碑，提炼关键数字（2-3句话）。
-
-## 监管与执行动态
-
-如有监管行动、地方执行、标准发布，简要归纳（2-3句话）。
-
-严格格式要求：
+格式要求：
 - 每个部分以 ## 标题开头，标题独占一行，标题后空一行再写正文
 - 正文中用 **粗体** 强调关键信息（如政策名称、数据）
-- 如果某个部分没有对应内容，直接省略该部分
 - 不要使用编号列表（1. 2. 3.），用自然段落叙述
-- 用具体数据和事实说话，避免空泛评价
 - 直接输出，不加"概述""以下是"等前缀
+
+质量要求：
+- 核心要点必须体现"信号价值"——点明趋势或方向，而非复述标题
+- 每个section要有因果分析或影响判断，不要只描述"发生了什么"
+- 用具体数据和事实说话，避免"值得关注""需要注意"等空话
 
 采集条目：
 {all_summaries}"""

@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, date
 from typing import Callable, Awaitable
 
@@ -16,6 +17,23 @@ from app.config import AGENT_MAX_TURNS
 
 logger = logging.getLogger(__name__)
 
+# Regex for leading date pattern like "2026-02-06 "
+_LEADING_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}\s*')
+
+
+def _clean_title(title: str) -> str:
+    """Clean a title by removing embedded dates and extra whitespace/newlines."""
+    if not title:
+        return title
+    # Replace newlines with spaces
+    title = title.replace('\n', ' ').replace('\r', ' ')
+    # Strip leading date patterns like "2026-02-06 "
+    title = _LEADING_DATE_RE.sub('', title)
+    # Strip whitespace
+    title = title.strip()
+    return title
+
+
 # Type alias for progress callback
 ProgressCallback = Callable[[str], Awaitable[None]]
 
@@ -23,9 +41,10 @@ ProgressCallback = Callable[[str], Awaitable[None]]
 class AgentResult:
     """Stores the results collected by a single agent run."""
 
-    def __init__(self, source_id: int, source_name: str):
+    def __init__(self, source_id: int, source_name: str, source_url: str = ""):
         self.source_id = source_id
         self.source_name = source_name
+        self.source_url = source_url
         self.items: list[dict] = []
         self.finish_summary: str = ""
         self.error: str = ""
@@ -43,6 +62,7 @@ async def run_agent(
     tools: list[dict] | None = None,
     max_turns: int | None = None,
     enable_pruning: bool = False,
+    crawl_rules: str = "",
 ) -> AgentResult:
     """Run a crawl agent for a single monitor source.
 
@@ -52,7 +72,9 @@ async def run_agent(
     When system_prompt/user_message/tools are provided externally (multi-agent mode),
     the internal prompt building is skipped.
     """
-    result = AgentResult(source.id, source.name)
+    # Disable domain filter if crawl_rules explicitly allow cross-domain content
+    effective_source_url = "" if "允许跨域" in crawl_rules else source.url
+    result = AgentResult(source.id, source.name, source_url=effective_source_url)
 
     effective_max_turns = max_turns or AGENT_MAX_TURNS
     effective_tools = tools or ALL_TOOLS
@@ -92,6 +114,10 @@ async def run_agent(
 
     await _progress("开始采集")
 
+    # Early termination tracking: count consecutive browse turns with no new items
+    _consecutive_empty_browses = 0
+    _EARLY_TERM_THRESHOLD = 2  # hint after 2 consecutive empty browse turns
+
     for turn in range(effective_max_turns):
         if cancel_event and cancel_event.is_set():
             result.error = "任务被用户中止"
@@ -118,6 +144,10 @@ async def run_agent(
             result.finish_summary = response.get("content", "")
             break
 
+        # Track whether this turn had a browse_page and whether items were saved
+        items_before_turn = len(result.items)
+        turn_had_browse = False
+
         for tc in tool_calls:
             fn_name = tc["function"]["name"]
             try:
@@ -128,6 +158,7 @@ async def run_agent(
             logger.info("[%s] Tool call: %s(%s)", source.name, fn_name, list(fn_args.keys()))
 
             if fn_name == "browse_page":
+                turn_had_browse = True
                 await _progress(f"正在浏览: {fn_args.get('url', '')[:80]}")
             elif fn_name == "download_file":
                 await _progress(f"正在下载: {fn_args.get('filename', '')}")
@@ -167,6 +198,23 @@ async def run_agent(
                 await _progress(f"采集完成，共 {len(result.items)} 条")
                 return result
 
+        # Early termination: check if browse happened but no new items were saved
+        items_after_turn = len(result.items)
+        if turn_had_browse:
+            if items_after_turn == items_before_turn:
+                _consecutive_empty_browses += 1
+                logger.info("[%s] Empty browse turn (%d consecutive)", source.name, _consecutive_empty_browses)
+            else:
+                _consecutive_empty_browses = 0
+
+            if _consecutive_empty_browses >= _EARLY_TERM_THRESHOLD:
+                logger.info("[%s] Early termination hint: %d consecutive empty browses", source.name, _consecutive_empty_browses)
+                await _progress(f"连续{_consecutive_empty_browses}页无新数据，提示结束")
+                messages.append({
+                    "role": "user",
+                    "content": f"已连续浏览{_consecutive_empty_browses}个页面未发现新的符合日期范围的条目，建议调用 finish 结束当前栏目采集。",
+                })
+
     if not result.finish_summary and not result.error:
         result.finish_summary = f"达到最大轮次({effective_max_turns})，自动结束"
 
@@ -187,7 +235,7 @@ async def _execute_tool(name: str, args: dict, result: AgentResult) -> str:
             return await read_document(args["file_path"])
 
         elif name == "save_result":
-            title = args.get("title", "")
+            title = _clean_title(args.get("title", ""))
             summary = args.get("summary", "")
             if summary.strip() == title.strip():
                 summary = ""
@@ -203,6 +251,11 @@ async def _execute_tool(name: str, args: dict, result: AgentResult) -> str:
                 "attachment_path": args.get("attachment_path", ""),
                 "attachment_summary": args.get("attachment_summary", ""),
             }
+            # Domain check: skip cross-domain items
+            if result.source_url and item["url"]:
+                from app.agent.domain_filter import is_same_domain
+                if not is_same_domain(item["url"], result.source_url):
+                    return f"已跳过（跨域内容）: {item['title']}"
             result.items.append(item)
             return f"已保存: {item['title']}（共{len(result.items)}条）"
 
@@ -221,17 +274,25 @@ async def _execute_tool(name: str, args: dict, result: AgentResult) -> str:
                 elif isinstance(raw, list):
                     items_data = raw
             saved_count = 0
+            skipped_count = 0
             for item in items_data:
                 if not isinstance(item, dict):
                     continue
-                title = item.get("title", "")
+                item_url = item.get("url", "")
+                # Domain check: skip cross-domain items
+                if result.source_url and item_url:
+                    from app.agent.domain_filter import is_same_domain
+                    if not is_same_domain(item_url, result.source_url):
+                        skipped_count += 1
+                        continue
+                title = _clean_title(item.get("title", ""))
                 summary = item.get("summary", "")
                 # Discard summary if it's just a copy of the title
                 if summary.strip() == title.strip():
                     summary = ""
                 result.items.append({
                     "title": title,
-                    "url": item.get("url", ""),
+                    "url": item_url,
                     "content_type": item.get("content_type", "news"),
                     "summary": summary,
                     "published_date": item.get("published_date", ""),
@@ -242,7 +303,10 @@ async def _execute_tool(name: str, args: dict, result: AgentResult) -> str:
                     "attachment_summary": "",
                 })
                 saved_count += 1
-            return f"批量保存成功: {saved_count} 条（共{len(result.items)}条）"
+            msg = f"批量保存成功: {saved_count} 条（共{len(result.items)}条）"
+            if skipped_count:
+                msg += f"，跳过 {skipped_count} 条跨域内容"
+            return msg
 
         elif name == "finish":
             return "采集完成"

@@ -3,7 +3,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_db
@@ -51,12 +51,37 @@ async def list_reports(
 
     result = await db.execute(stmt)
     reports = result.scalars().all()
+
+    # Gather source info per batch_id
+    batch_ids = list({r.batch_id for r in reports if r.batch_id})
+    batch_source_map: dict[str, tuple[list[str], int]] = {}
+    if batch_ids:
+        task_stmt = (
+            select(
+                CrawlTask.batch_id,
+                CrawlTask.source_name,
+                func.sum(CrawlTask.items_found),
+            )
+            .where(CrawlTask.batch_id.in_(batch_ids))
+            .group_by(CrawlTask.batch_id, CrawlTask.source_name)
+        )
+        task_rows = (await db.execute(task_stmt)).all()
+        for bid, sname, items_sum in task_rows:
+            if bid not in batch_source_map:
+                batch_source_map[bid] = ([], 0)
+            names, total = batch_source_map[bid]
+            if sname and sname not in names:
+                names.append(sname)
+            batch_source_map[bid] = (names, total + (items_sum or 0))
+
     return [
         {
             "id": r.id,
             "batch_id": r.batch_id,
             "title": r.title,
             "generated_at": str(r.generated_at)[:16] if r.generated_at else None,
+            "source_names": batch_source_map.get(r.batch_id, ([], 0))[0],
+            "total_items": batch_source_map.get(r.batch_id, ([], 0))[1],
         }
         for r in reports
     ]

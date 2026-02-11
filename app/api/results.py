@@ -22,6 +22,7 @@ async def list_results(
     source_id: int | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    tag: str | None = None,
     sort: str = "desc",
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
@@ -35,6 +36,9 @@ async def list_results(
 
     if source_id is not None:
         stmt = stmt.where(CrawlResult.source_id == source_id)
+
+    if tag:
+        stmt = stmt.where(CrawlResult.tags.contains(tag))
 
     if date_from:
         try:
@@ -71,6 +75,7 @@ async def list_results(
             "url": r.CrawlResult.url,
             "content_type": r.CrawlResult.content_type,
             "summary": r.CrawlResult.summary,
+            "tags": [t for t in (r.CrawlResult.tags or "").split(",") if t],
             "published_date": str(r.CrawlResult.published_date) if r.CrawlResult.published_date else None,
             "crawled_at": str(r.CrawlResult.crawled_at)[:16] if r.CrawlResult.crawled_at else None,
             "has_attachment": r.CrawlResult.has_attachment,
@@ -78,6 +83,22 @@ async def list_results(
         }
         for r in results
     ]
+
+
+@router.get("/tags")
+async def list_tags(db: AsyncSession = Depends(get_db)):
+    """Return all unique tags with counts."""
+    stmt = select(CrawlResult.tags).where(CrawlResult.tags != "")
+    rows = await db.execute(stmt)
+    tag_counts: dict[str, int] = {}
+    for (tags_str,) in rows:
+        for tag in tags_str.split(","):
+            tag = tag.strip()
+            if tag:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    # Sort by count descending
+    sorted_tags = sorted(tag_counts.items(), key=lambda x: -x[1])
+    return [{"tag": t, "count": c} for t, c in sorted_tags]
 
 
 # --- Static path routes MUST come before /{result_id} ---

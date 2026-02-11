@@ -12,9 +12,42 @@
   </div>
 </div>
 
+<div id="sourceNav" class="card mb-4" style="display:none">
+  <div class="flex flex-wrap items-center gap-2">
+    <span class="text-sm font-medium text-gray-600">源导航:</span>
+    <div id="sourceNavBtns" class="flex flex-wrap gap-2"></div>
+  </div>
+</div>
+
 <div class="card">
-  <div class="prose max-w-none">
+  <div class="prose max-w-none" id="reportContent">
     {{ report.content_html | safe }}
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const content = document.getElementById('reportContent');
+  const h2s = content.querySelectorAll('h2');
+  if (h2s.length <= 1) return;
+
+  const nav = document.getElementById('sourceNav');
+  const btnsContainer = document.getElementById('sourceNavBtns');
+  nav.style.display = '';
+
+  h2s.forEach((h2, i) => {
+    const id = 'source-section-' + i;
+    h2.id = id;
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-secondary btn-sm';
+    btn.textContent = h2.textContent;
+    btn.onclick = function() {
+      document.getElementById(id).scrollIntoView({ behavior: 'smooth' });
+    };
+    btnsContainer.appendChild(btn);
+  });
+});
+</script>
 {% endblock %}

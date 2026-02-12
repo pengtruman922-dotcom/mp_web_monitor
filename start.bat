@@ -8,12 +8,7 @@ echo.
 
 cd /d "%~dp0"
 
-echo [1/3] 释放端口 8090...
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8090 ^| findstr LISTENING') do (
-    taskkill /PID %%a /F >nul 2>&1
-)
-
-echo [2/3] 检查依赖...
+echo [1/2] 检查依赖...
 python -c "import fastapi, playwright, openai" 2>nul
 if errorlevel 1 (
     echo 正在安装依赖...
@@ -21,9 +16,10 @@ if errorlevel 1 (
     python -m playwright install chromium
 )
 
-echo [3/3] 启动服务...
+echo [2/2] 启动服务...
 echo.
-echo   访问地址: http://localhost:8090
+echo   默认地址: http://localhost:8090
+echo   若端口被占用将自动切换，请查看下方日志
 echo   按 Ctrl+C 停止服务
 echo.
 python -m app.main

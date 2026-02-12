@@ -64,11 +64,39 @@
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
           推送规则
         </a>
+        {% if user and user.role == 'admin' %}
+        <a href="/accounts" class="sidebar-link {% if active_page == 'accounts' %}active{% endif %}">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+          账号管理
+        </a>
         <a href="/settings" class="sidebar-link {% if active_page == 'settings' %}active{% endif %}">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
           设置
         </a>
+        {% endif %}
       </nav>
+
+      <!-- User info + data switcher at bottom -->
+      <div class="border-t border-gray-200 pt-4 mt-4 space-y-3">
+        {% if user and user.role == 'admin' %}
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">查看数据</label>
+          <select id="viewUserSelect" class="form-input text-xs py-1" onchange="onViewUserChange()" style="font-size:12px">
+            <option value="">我的数据</option>
+            <option value="0">全部用户</option>
+          </select>
+        </div>
+        {% endif %}
+        <div class="flex items-center justify-between">
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-gray-900 truncate">{{ user.display_name or user.username }}</p>
+            <p class="text-xs text-gray-400">{{ '管理员' if user.role == 'admin' else '普通用户' }}</p>
+          </div>
+          <button onclick="doLogout()" class="text-xs text-gray-400 hover:text-red-500 transition-colors" title="退出登录">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+          </button>
+        </div>
+      </div>
     </aside>
 
     <!-- Main content -->
@@ -93,6 +121,62 @@
         if (trigger) showToast(trigger);
       }
     });
+
+    // --- Logout ---
+    async function doLogout() {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      window.location.href = '/login';
+    }
+
+    // --- Admin data switcher ---
+    function getViewUserParam() {
+      const v = localStorage.getItem('view_user_id');
+      return (v !== null && v !== '') ? v : null;
+    }
+
+    function appendViewUserParam(params) {
+      const v = getViewUserParam();
+      if (v !== null) params.set('view_user_id', v);
+      return params;
+    }
+
+    function onViewUserChange() {
+      const sel = document.getElementById('viewUserSelect');
+      if (!sel) return;
+      const val = sel.value;
+      if (val === '') {
+        localStorage.removeItem('view_user_id');
+      } else {
+        localStorage.setItem('view_user_id', val);
+      }
+      // Reload current page
+      window.location.reload();
+    }
+
+    // On page load: restore view_user_id select + load user list for admin
+    (async function initViewUser() {
+      const sel = document.getElementById('viewUserSelect');
+      if (!sel) return;
+
+      // Load user list for admin dropdown
+      try {
+        const res = await fetch('/api/users');
+        if (res.ok) {
+          const users = await res.json();
+          users.forEach(u => {
+            if (u.id === {{ user.id if user else 0 }}) return; // skip self (already "我的数据")
+            const opt = document.createElement('option');
+            opt.value = u.id;
+            opt.textContent = u.display_name || u.username;
+            sel.appendChild(opt);
+          });
+        }
+      } catch(e) { /* ignore */ }
+
+      // Restore selection
+      const saved = localStorage.getItem('view_user_id');
+      if (saved !== null) sel.value = saved;
+    })();
   </script>
   {% block scripts %}{% endblock %}
 </body>

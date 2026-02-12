@@ -137,7 +137,8 @@ function openModal(data) {
 function closeModal() { document.getElementById('modal').style.display = 'none'; }
 
 async function editRule(id) {
-  const res = await fetch(`/api/push-rules`);
+  const p = new URLSearchParams(); appendViewUserParam(p);
+  const res = await fetch(`/api/push-rules?${p.toString()}`);
   const rules = await res.json();
   const data = rules.find(r => r.id === id);
   if (data) openModal(data);

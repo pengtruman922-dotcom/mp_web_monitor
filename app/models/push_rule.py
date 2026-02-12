@@ -10,6 +10,7 @@ class PushRule(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, default=1, index=True)
     source_ids: Mapped[list] = mapped_column(JSON, default=list)  # List of source IDs
     channel: Mapped[str] = mapped_column(String(50), default="email")  # email / wechat_webhook
     recipients: Mapped[list] = mapped_column(JSON, default=list)  # Email addresses or webhook URLs

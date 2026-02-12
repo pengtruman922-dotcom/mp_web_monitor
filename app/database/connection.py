@@ -31,6 +31,11 @@ _COLUMN_MIGRATIONS = [
     ("push_rules", "push_mode", "VARCHAR(20) DEFAULT 'on_update'"),
     ("push_rules", "push_schedule", "VARCHAR(100) DEFAULT ''"),
     ("monitor_sources", "crawl_rules", "TEXT DEFAULT ''"),
+    ("monitor_sources", "user_id", "INTEGER DEFAULT 1"),
+    ("crawl_tasks", "user_id", "INTEGER DEFAULT 1"),
+    ("crawl_results", "user_id", "INTEGER DEFAULT 1"),
+    ("reports", "user_id", "INTEGER DEFAULT 1"),
+    ("push_rules", "user_id", "INTEGER DEFAULT 1"),
 ]
 
 

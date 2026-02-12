@@ -1,9 +1,12 @@
 """Database initialization and default data seeding."""
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import async_session
 from app.models.source import MonitorSource
+from app.models.user import User
 from app.models.settings import LLMConfig, EmailConfig, PromptConfig
 from app.config import (
     DEFAULT_LLM_API_URL, DEFAULT_LLM_API_KEY, DEFAULT_LLM_MODEL_NAME,
@@ -11,6 +14,8 @@ from app.config import (
     DEFAULT_SMTP_USERNAME, DEFAULT_SMTP_PASSWORD,
     DEFAULT_SENDER_EMAIL, DEFAULT_SENDER_NAME,
 )
+
+_logger = logging.getLogger(__name__)
 
 # Default monitor sources for MVP
 DEFAULT_SOURCES = [
@@ -53,11 +58,30 @@ DEFAULT_SOURCES = [
 async def seed_default_data():
     """Insert default data if tables are empty."""
     async with async_session() as session:
+        await _seed_admin_user(session)
         await _seed_sources(session)
         await _seed_llm_config(session)
         await _seed_email_config(session)
         await _seed_prompt_config(session)
         await session.commit()
+
+
+async def _seed_admin_user(session: AsyncSession):
+    result = await session.execute(select(User).limit(1))
+    if result.scalar_one_or_none() is not None:
+        return
+    from app.auth import hash_password
+    admin = User(
+        username="admin",
+        display_name="管理员",
+        password_hash=hash_password("admin123"),
+        role="admin",
+        is_active=True,
+        must_change_password=True,
+    )
+    session.add(admin)
+    await session.flush()  # ensure id=1
+    _logger.info("Seeded default admin user (admin/admin123)")
 
 
 async def _seed_sources(session: AsyncSession):

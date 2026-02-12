@@ -1,7 +1,51 @@
+# Environment
 .env
+
+# Database & Runtime data
 data/db.sqlite
 data/downloads/
+data/*.json
+data/*.txt
+data/*.py
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
+
+# Development temp files
+_browse_result.txt
+temp_results_*.json
+tmp_*.json
+tmp_*.txt
+dataapp.log
+nul
+C:Users*
+
+# Development docs (not part of source)
+plans/
+plan_content_quality.md
+multi-agent-design.md
+testrecord.md
+Prd.md
+企业微信自动推送新闻实现指南.md
+迭代记录.md
+
+# Test artifacts
+test_round.py
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store

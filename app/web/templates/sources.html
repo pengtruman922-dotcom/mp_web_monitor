@@ -171,7 +171,8 @@ function resetCrawlRules() {
 function closeModal() { document.getElementById('modal').style.display = 'none'; }
 
 async function editSource(id) {
-  const res = await fetch(`/api/sources/${id}`);
+  const p = new URLSearchParams(); appendViewUserParam(p);
+  const res = await fetch(`/api/sources/${id}?${p.toString()}`);
   const data = await res.json();
   openModal(data);
 }

@@ -15,11 +15,25 @@ scheduler = AsyncIOScheduler()
 
 
 async def _scheduled_crawl():
-    """Callback for scheduled crawl: run all active sources."""
+    """Callback for scheduled crawl: run all active sources, grouped by user."""
     from app.agent.orchestrator import run_batch
+    from app.models.user import User
+    from sqlalchemy import distinct
+
     logger.info("Scheduled crawl triggered")
     try:
-        await run_batch(triggered_by=TriggerType.scheduled.value)
+        # Find all user_ids that have active sources
+        async with async_session() as session:
+            result = await session.execute(
+                select(distinct(MonitorSource.user_id)).where(MonitorSource.is_active == True)
+            )
+            user_ids = [row[0] for row in result.all()]
+
+        for uid in user_ids:
+            try:
+                await run_batch(triggered_by=TriggerType.scheduled.value, user_id=uid)
+            except Exception as e:
+                logger.error("Scheduled crawl failed for user %d: %s", uid, e)
     except Exception as e:
         logger.error("Scheduled crawl failed: %s", e)
 

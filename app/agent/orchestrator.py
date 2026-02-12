@@ -84,20 +84,24 @@ def get_running_sources() -> set[int]:
 async def run_batch(
     source_ids: list[int] | None = None,
     triggered_by: str = TriggerType.manual.value,
+    user_id: int = 1,
 ) -> str:
     """Run a crawl batch for the given sources (or all active sources).
 
     Returns the batch_id.
     """
     batch_id = uuid.uuid4().hex[:12]
-    logger.info("Starting batch %s (triggered_by=%s)", batch_id, triggered_by)
+    logger.info("Starting batch %s (triggered_by=%s, user_id=%d)", batch_id, triggered_by, user_id)
 
     runnable: list[MonitorSource] = []
 
     try:
         # Fetch sources
         async with async_session() as session:
-            query = select(MonitorSource).where(MonitorSource.is_active == True)
+            query = select(MonitorSource).where(
+                MonitorSource.is_active == True,
+                MonitorSource.user_id == user_id,
+            )
             if source_ids:
                 query = query.where(MonitorSource.id.in_(source_ids))
             result = await session.execute(query)
@@ -136,6 +140,7 @@ async def run_batch(
                     source_name=src.name,
                     status=TaskStatus.pending.value,
                     triggered_by=triggered_by,
+                    user_id=user_id,
                 )
                 session.add(task)
             await session.commit()
@@ -153,7 +158,7 @@ async def run_batch(
         async def _limited_run(src, tid, bid):
             async with sem:
                 try:
-                    await _run_single_source(src, tid, bid)
+                    await _run_single_source(src, tid, bid, user_id=user_id)
                 finally:
                     _running_sources.discard(src.id)
 
@@ -161,7 +166,7 @@ async def run_batch(
         await asyncio.gather(*agent_tasks, return_exceptions=True)
 
         # Generate and dispatch report
-        await _generate_report(batch_id)
+        await _generate_report(batch_id, user_id=user_id)
 
     except Exception as e:
         logger.error("Batch %s failed: %s", batch_id, e)
@@ -884,7 +889,7 @@ async def _rank_items(items: list[dict], on_progress=None) -> list[dict]:
 # Main pipeline: _run_single_source
 ##############################################################################
 
-async def _run_single_source(source: MonitorSource, task_id: int, batch_id: str):
+async def _run_single_source(source: MonitorSource, task_id: int, batch_id: str, user_id: int = 1):
     """Run the 4-phase pipeline for a single source and persist results."""
     cancel_event = asyncio.Event()
     _cancel_flags[task_id] = cancel_event
@@ -1066,6 +1071,7 @@ async def _run_single_source(source: MonitorSource, task_id: int, batch_id: str)
                     attachment_path=item.get("attachment_path", ""),
                     attachment_summary=item.get("attachment_summary", ""),
                     published_date=pub_date,
+                    user_id=user_id,
                 )
                 session.add(cr)
             await session.commit()
@@ -1261,7 +1267,7 @@ def _overview_to_html(text: str) -> str:
     return "\n".join(html_parts)
 
 
-async def _generate_report(batch_id: str):
+async def _generate_report(batch_id: str, user_id: int = 1):
     """Generate a report from the batch results and dispatch notifications."""
     async with async_session() as session:
         # Fetch all results for this batch
@@ -1364,6 +1370,7 @@ async def _generate_report(batch_id: str):
             content_html=content_html,
             content_text=content_text,
             overview=overview,
+            user_id=user_id,
         )
         session.add(report)
         await session.commit()

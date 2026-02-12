@@ -33,4 +33,5 @@ class CrawlTask(Base):
     items_found: Mapped[int] = mapped_column(Integer, default=0)
     error_log: Mapped[str] = mapped_column(Text, default="")
     progress_log: Mapped[str] = mapped_column(Text, default="")
+    user_id: Mapped[int] = mapped_column(Integer, default=1, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

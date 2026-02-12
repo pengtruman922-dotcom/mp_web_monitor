@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_db
 from app.models.source import MonitorSource
+from app.models.user import User
+from app.auth import get_current_user, get_effective_user_id
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -39,23 +41,34 @@ class SourceUpdate(BaseModel):
 
 
 @router.get("")
-async def list_sources(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(MonitorSource).order_by(MonitorSource.id))
+async def list_sources(
+    view_user_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    uid = get_effective_user_id(user, view_user_id)
+    stmt = select(MonitorSource).order_by(MonitorSource.id)
+    if uid is not None:
+        stmt = stmt.where(MonitorSource.user_id == uid)
+    result = await db.execute(stmt)
     sources = result.scalars().all()
     return [_to_dict(s) for s in sources]
 
 
 @router.get("/{source_id}")
-async def get_source(source_id: int, db: AsyncSession = Depends(get_db)):
+async def get_source(source_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     source = await db.get(MonitorSource, source_id)
     if not source:
         raise HTTPException(404, "监控源不存在")
+    if user.role != "admin" and source.user_id != user.id:
+        raise HTTPException(403, "无权限")
     return _to_dict(source)
 
 
 @router.post("")
-async def create_source(data: SourceCreate, db: AsyncSession = Depends(get_db)):
+async def create_source(data: SourceCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     source = MonitorSource(**data.model_dump())
+    source.user_id = user.id
     db.add(source)
     await db.commit()
     await db.refresh(source)
@@ -63,10 +76,12 @@ async def create_source(data: SourceCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/{source_id}")
-async def update_source(source_id: int, data: SourceUpdate, db: AsyncSession = Depends(get_db)):
+async def update_source(source_id: int, data: SourceUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     source = await db.get(MonitorSource, source_id)
     if not source:
         raise HTTPException(404, "监控源不存在")
+    if user.role != "admin" and source.user_id != user.id:
+        raise HTTPException(403, "无权限")
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(source, key, value)
     await db.commit()
@@ -75,10 +90,12 @@ async def update_source(source_id: int, data: SourceUpdate, db: AsyncSession = D
 
 
 @router.delete("/{source_id}")
-async def delete_source(source_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_source(source_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     source = await db.get(MonitorSource, source_id)
     if not source:
         raise HTTPException(404, "监控源不存在")
+    if user.role != "admin" and source.user_id != user.id:
+        raise HTTPException(403, "无权限")
     await db.delete(source)
     await db.commit()
     return {"ok": True}

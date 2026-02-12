@@ -10,6 +10,8 @@ from app.database.connection import get_db
 from app.models.report import Report
 from app.models.result import CrawlResult
 from app.models.task import CrawlTask
+from app.models.user import User
+from app.auth import get_current_user, get_effective_user_id
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -24,9 +26,15 @@ async def list_reports(
     date_to: str | None = None,
     sort: str = "desc",
     limit: int = 50,
+    view_user_id: int | None = None,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    uid = get_effective_user_id(user, view_user_id)
     stmt = select(Report)
+
+    if uid is not None:
+        stmt = stmt.where(Report.user_id == uid)
 
     if date_from:
         try:
@@ -90,19 +98,23 @@ async def list_reports(
 # --- Static path routes MUST come before /{report_id} ---
 
 @router.post("/batch-delete")
-async def batch_delete_reports(body: BatchDeleteRequest, db: AsyncSession = Depends(get_db)):
+async def batch_delete_reports(body: BatchDeleteRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     if not body.ids:
         return {"ok": True, "deleted": 0}
-    result = await db.execute(
-        delete(Report).where(Report.id.in_(body.ids))
-    )
+    stmt = delete(Report).where(Report.id.in_(body.ids))
+    if user.role != "admin":
+        stmt = stmt.where(Report.user_id == user.id)
+    result = await db.execute(stmt)
     await db.commit()
     return {"ok": True, "deleted": result.rowcount}
 
 
 @router.delete("/all")
-async def delete_all_reports(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(delete(Report))
+async def delete_all_reports(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    stmt = delete(Report)
+    if user.role != "admin":
+        stmt = stmt.where(Report.user_id == user.id)
+    result = await db.execute(stmt)
     await db.commit()
     return {"ok": True, "deleted": result.rowcount}
 
@@ -110,10 +122,12 @@ async def delete_all_reports(db: AsyncSession = Depends(get_db)):
 # --- Dynamic path routes ---
 
 @router.get("/{report_id}")
-async def get_report(report_id: int, db: AsyncSession = Depends(get_db)):
+async def get_report(report_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     report = await db.get(Report, report_id)
     if not report:
         raise HTTPException(404, "报告不存在")
+    if user.role != "admin" and report.user_id != user.id:
+        raise HTTPException(403, "无权限")
     return {
         "id": report.id,
         "batch_id": report.batch_id,
@@ -126,21 +140,25 @@ async def get_report(report_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/{report_id}")
-async def delete_report(report_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_report(report_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     obj = await db.get(Report, report_id)
     if not obj:
         raise HTTPException(404, "报告不存在")
+    if user.role != "admin" and obj.user_id != user.id:
+        raise HTTPException(403, "无权限")
     await db.delete(obj)
     await db.commit()
     return {"ok": True}
 
 
 @router.get("/{report_id}/results")
-async def get_report_results(report_id: int, db: AsyncSession = Depends(get_db)):
+async def get_report_results(report_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     """Get the detailed crawl results for a report."""
     report = await db.get(Report, report_id)
     if not report:
         raise HTTPException(404, "报告不存在")
+    if user.role != "admin" and report.user_id != user.id:
+        raise HTTPException(403, "无权限")
 
     # Find tasks for this batch
     tasks_q = await db.execute(

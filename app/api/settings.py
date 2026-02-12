@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_db
 from app.models.settings import LLMConfig, EmailConfig
+from app.models.user import User
+from app.auth import require_admin
 from app.scheduler.scheduler import update_schedule, get_scheduler_jobs
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -22,7 +24,7 @@ class LLMConfigUpdate(BaseModel):
 
 
 @router.get("/llm")
-async def get_llm_config(db: AsyncSession = Depends(get_db)):
+async def get_llm_config(db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)):
     result = await db.execute(select(LLMConfig).where(LLMConfig.is_active == True).limit(1))
     config = result.scalar_one_or_none()
     if not config:
@@ -38,7 +40,7 @@ async def get_llm_config(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/llm")
-async def update_llm_config(data: LLMConfigUpdate, db: AsyncSession = Depends(get_db)):
+async def update_llm_config(data: LLMConfigUpdate, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)):
     result = await db.execute(select(LLMConfig).where(LLMConfig.is_active == True).limit(1))
     config = result.scalar_one_or_none()
     if config:
@@ -61,7 +63,7 @@ async def update_llm_config(data: LLMConfigUpdate, db: AsyncSession = Depends(ge
 
 
 @router.post("/llm/test")
-async def test_llm_config(data: LLMConfigUpdate):
+async def test_llm_config(data: LLMConfigUpdate, admin: User = Depends(require_admin)):
     """Test LLM connectivity."""
     from openai import AsyncOpenAI
 
@@ -97,7 +99,7 @@ class EmailConfigUpdate(BaseModel):
 
 
 @router.get("/email")
-async def get_email_config(db: AsyncSession = Depends(get_db)):
+async def get_email_config(db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)):
     result = await db.execute(select(EmailConfig).limit(1))
     config = result.scalar_one_or_none()
     if not config:
@@ -115,7 +117,7 @@ async def get_email_config(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/email")
-async def update_email_config(data: EmailConfigUpdate, db: AsyncSession = Depends(get_db)):
+async def update_email_config(data: EmailConfigUpdate, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)):
     result = await db.execute(select(EmailConfig).limit(1))
     config = result.scalar_one_or_none()
     if config:
@@ -141,12 +143,12 @@ class ScheduleUpdate(BaseModel):
 
 
 @router.get("/scheduler")
-async def get_schedule():
+async def get_schedule(admin: User = Depends(require_admin)):
     return {"jobs": get_scheduler_jobs()}
 
 
 @router.put("/scheduler")
-async def update_scheduler(data: ScheduleUpdate):
+async def update_scheduler(data: ScheduleUpdate, admin: User = Depends(require_admin)):
     try:
         await update_schedule(data.cron)
         return {"ok": True, "cron": data.cron}

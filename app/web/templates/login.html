@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 - 政策情报助手</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .form-input { width: 100%; padding: 10px 14px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; outline: none; transition: border 0.15s; }
+    .form-input:focus { border-color: #1d4ed8; box-shadow: 0 0 0 3px rgba(29,78,216,0.1); }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen flex items-center justify-center">
+  <div class="w-full max-w-sm">
+    <div class="bg-white rounded-xl shadow-lg p-8">
+      <div class="text-center mb-6">
+        <h1 class="text-xl font-bold text-gray-900">政策情报助手</h1>
+        <p class="text-sm text-gray-400 mt-1">Policy Intelligence</p>
+      </div>
+
+      <form id="loginForm" onsubmit="handleLogin(event)">
+        <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">用户名</label>
+            <input class="form-input" id="username" required autofocus placeholder="请输入用户名">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">密码</label>
+            <input class="form-input" id="password" type="password" required placeholder="请输入密码">
+          </div>
+          <div id="errorMsg" class="text-sm text-red-600 hidden"></div>
+          <button type="submit" id="loginBtn"
+            class="w-full py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors">
+            登录
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Change Password Modal -->
+  <div id="changePwdModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50" style="display:none">
+    <div class="bg-white rounded-xl p-6 w-full max-w-sm mx-4">
+      <h3 class="text-lg font-bold text-gray-900 mb-2">首次登录需修改密码</h3>
+      <p class="text-sm text-gray-500 mb-4">请设置新密码（至少6位）</p>
+      <form id="changePwdForm" onsubmit="handleChangePassword(event)">
+        <div class="space-y-3">
+          <input class="form-input" id="newPassword" type="password" required placeholder="新密码" minlength="6">
+          <input class="form-input" id="confirmPassword" type="password" required placeholder="确认新密码" minlength="6">
+          <div id="changePwdError" class="text-sm text-red-600 hidden"></div>
+          <button type="submit"
+            class="w-full py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors">
+            确认修改
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+  let loginPassword = '';
+
+  async function handleLogin(e) {
+    e.preventDefault();
+    const errEl = document.getElementById('errorMsg');
+    errEl.classList.add('hidden');
+    const btn = document.getElementById('loginBtn');
+    btn.disabled = true;
+    btn.textContent = '登录中...';
+
+    const username = document.getElementById('username').value;
+    const password = document.getElementById('password').value;
+    loginPassword = password;
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        errEl.textContent = data.detail || '登录失败';
+        errEl.classList.remove('hidden');
+        return;
+      }
+      if (data.must_change_password) {
+        document.getElementById('changePwdModal').style.display = 'flex';
+        return;
+      }
+      window.location.href = '/';
+    } catch (err) {
+      errEl.textContent = '网络错误，请重试';
+      errEl.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '登录';
+    }
+  }
+
+  async function handleChangePassword(e) {
+    e.preventDefault();
+    const errEl = document.getElementById('changePwdError');
+    errEl.classList.add('hidden');
+
+    const newPwd = document.getElementById('newPassword').value;
+    const confirmPwd = document.getElementById('confirmPassword').value;
+    if (newPwd !== confirmPwd) {
+      errEl.textContent = '两次输入的密码不一致';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    if (newPwd.length < 6) {
+      errEl.textContent = '密码至少6位';
+      errEl.classList.remove('hidden');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/auth/change-password', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ old_password: loginPassword, new_password: newPwd }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        errEl.textContent = data.detail || '修改失败';
+        errEl.classList.remove('hidden');
+        return;
+      }
+      window.location.href = '/';
+    } catch (err) {
+      errEl.textContent = '网络错误，请重试';
+      errEl.classList.remove('hidden');
+    }
+  }
+  </script>
+</body>
+</html>

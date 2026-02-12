@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+{% block title %}账号管理 - 政策情报助手{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-2xl font-bold text-gray-900">账号管理</h2>
+  <button class="btn btn-primary" onclick="openCreateModal()">+ 新建用户</button>
+</div>
+
+<div class="card overflow-hidden">
+  <table class="w-full text-sm" id="usersTable">
+    <thead class="bg-gray-50">
+      <tr>
+        <th class="text-left px-4 py-3 font-medium text-gray-500">ID</th>
+        <th class="text-left px-4 py-3 font-medium text-gray-500">用户名</th>
+        <th class="text-left px-4 py-3 font-medium text-gray-500">显示名</th>
+        <th class="text-left px-4 py-3 font-medium text-gray-500">角色</th>
+        <th class="text-left px-4 py-3 font-medium text-gray-500">状态</th>
+        <th class="text-left px-4 py-3 font-medium text-gray-500">创建时间</th>
+        <th class="text-left px-4 py-3 font-medium text-gray-500">操作</th>
+      </tr>
+    </thead>
+    <tbody id="usersBody" class="divide-y divide-gray-100">
+      <tr><td colspan="7" class="px-4 py-8 text-center text-gray-400">加载中...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Create/Edit User Modal -->
+<div id="userModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50" style="display:none">
+  <div class="bg-white rounded-xl p-6 w-full max-w-md mx-4">
+    <h3 id="userModalTitle" class="text-lg font-bold mb-4">新建用户</h3>
+    <form id="userForm" onsubmit="saveUser(event)">
+      <input type="hidden" id="editUserId" value="">
+      <div class="space-y-3">
+        <div>
+          <label class="form-label">用户名</label>
+          <input class="form-input" id="f_username" required placeholder="登录用户名">
+        </div>
+        <div>
+          <label class="form-label">显示名称</label>
+          <input class="form-input" id="f_display_name" placeholder="可选">
+        </div>
+        <div id="passwordGroup">
+          <label class="form-label">密码（至少6位）</label>
+          <input class="form-input" id="f_password" type="password" minlength="6" placeholder="设置初始密码">
+        </div>
+        <div>
+          <label class="form-label">角色</label>
+          <select class="form-input" id="f_role">
+            <option value="user">普通用户</option>
+            <option value="admin">管理员</option>
+          </select>
+        </div>
+      </div>
+      <div class="flex justify-end gap-3 mt-6">
+        <button type="button" class="btn btn-secondary" onclick="closeUserModal()">取消</button>
+        <button type="submit" class="btn btn-primary">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Reset Password Modal -->
+<div id="resetPwdModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50" style="display:none">
+  <div class="bg-white rounded-xl p-6 w-full max-w-sm mx-4">
+    <h3 class="text-lg font-bold mb-4">重置密码</h3>
+    <form onsubmit="doResetPassword(event)">
+      <input type="hidden" id="resetUserId" value="">
+      <div class="space-y-3">
+        <p class="text-sm text-gray-500">为用户 <strong id="resetUserName"></strong> 设置新密码</p>
+        <input class="form-input" id="f_new_password" type="password" required minlength="6" placeholder="新密码（至少6位）">
+      </div>
+      <div class="flex justify-end gap-3 mt-6">
+        <button type="button" class="btn btn-secondary" onclick="closeResetPwdModal()">取消</button>
+        <button type="submit" class="btn btn-primary">确认重置</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let usersData = [];
+
+async function loadUsers() {
+  try {
+    const res = await fetch('/api/users');
+    usersData = await res.json();
+    renderUsers();
+  } catch(e) {
+    document.getElementById('usersBody').innerHTML =
+      '<tr><td colspan="7" class="px-4 py-8 text-center text-red-500">加载失败</td></tr>';
+  }
+}
+
+function renderUsers() {
+  const tbody = document.getElementById('usersBody');
+  if (!usersData.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-400">暂无用户</td></tr>';
+    return;
+  }
+  tbody.innerHTML = usersData.map(u => `
+    <tr class="hover:bg-gray-50">
+      <td class="px-4 py-3 text-gray-500">${u.id}</td>
+      <td class="px-4 py-3 font-medium text-gray-900">${escHtml(u.username)}</td>
+      <td class="px-4 py-3 text-gray-700">${escHtml(u.display_name || '')}</td>
+      <td class="px-4 py-3">
+        <span class="badge ${u.role === 'admin' ? 'badge-blue' : 'badge-gray'}">${u.role === 'admin' ? '管理员' : '普通用户'}</span>
+      </td>
+      <td class="px-4 py-3">
+        ${u.is_active ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-red">停用</span>'}
+      </td>
+      <td class="px-4 py-3 text-gray-500 text-xs">${u.created_at ? u.created_at.slice(0, 16) : '-'}</td>
+      <td class="px-4 py-3">
+        <div class="flex gap-1">
+          <button class="btn btn-secondary btn-sm" onclick="editUser(${u.id})">编辑</button>
+          <button class="btn btn-secondary btn-sm" onclick="openResetPwd(${u.id}, '${escHtml(u.username)}')">重置密码</button>
+          ${u.is_active ? `<button class="btn btn-danger btn-sm" onclick="deactivateUser(${u.id}, '${escHtml(u.username)}')">停用</button>` : ''}
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+function openCreateModal() {
+  document.getElementById('userModalTitle').textContent = '新建用户';
+  document.getElementById('userForm').reset();
+  document.getElementById('editUserId').value = '';
+  document.getElementById('f_username').disabled = false;
+  document.getElementById('passwordGroup').style.display = '';
+  document.getElementById('f_password').required = true;
+  document.getElementById('userModal').style.display = 'flex';
+}
+
+function editUser(id) {
+  const u = usersData.find(x => x.id === id);
+  if (!u) return;
+  document.getElementById('userModalTitle').textContent = '编辑用户';
+  document.getElementById('editUserId').value = u.id;
+  document.getElementById('f_username').value = u.username;
+  document.getElementById('f_username').disabled = true;
+  document.getElementById('f_display_name').value = u.display_name || '';
+  document.getElementById('f_role').value = u.role;
+  // Hide password field for edit
+  document.getElementById('passwordGroup').style.display = 'none';
+  document.getElementById('f_password').required = false;
+  document.getElementById('userModal').style.display = 'flex';
+}
+
+function closeUserModal() { document.getElementById('userModal').style.display = 'none'; }
+
+async function saveUser(e) {
+  e.preventDefault();
+  const editId = document.getElementById('editUserId').value;
+  if (editId) {
+    // Update
+    const body = {
+      display_name: document.getElementById('f_display_name').value,
+      role: document.getElementById('f_role').value,
+    };
+    const res = await fetch(`/api/users/${editId}`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (res.ok) {
+      showToast('更新成功');
+      closeUserModal();
+      loadUsers();
+    } else {
+      const data = await res.json();
+      showToast(data.detail || '更新失败', 'error');
+    }
+  } else {
+    // Create
+    const body = {
+      username: document.getElementById('f_username').value,
+      display_name: document.getElementById('f_display_name').value,
+      password: document.getElementById('f_password').value,
+      role: document.getElementById('f_role').value,
+    };
+    const res = await fetch('/api/users', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (res.ok) {
+      showToast('创建成功');
+      closeUserModal();
+      loadUsers();
+    } else {
+      const data = await res.json();
+      showToast(data.detail || '创建失败', 'error');
+    }
+  }
+}
+
+function openResetPwd(id, username) {
+  document.getElementById('resetUserId').value = id;
+  document.getElementById('resetUserName').textContent = username;
+  document.getElementById('f_new_password').value = '';
+  document.getElementById('resetPwdModal').style.display = 'flex';
+}
+
+function closeResetPwdModal() { document.getElementById('resetPwdModal').style.display = 'none'; }
+
+async function doResetPassword(e) {
+  e.preventDefault();
+  const id = document.getElementById('resetUserId').value;
+  const newPwd = document.getElementById('f_new_password').value;
+  const res = await fetch(`/api/users/${id}/reset-password`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ new_password: newPwd }),
+  });
+  if (res.ok) {
+    showToast('密码已重置');
+    closeResetPwdModal();
+  } else {
+    const data = await res.json();
+    showToast(data.detail || '重置失败', 'error');
+  }
+}
+
+async function deactivateUser(id, username) {
+  if (!confirm(`确定停用用户「${username}」？`)) return;
+  const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+  if (res.ok) {
+    showToast('已停用');
+    loadUsers();
+  } else {
+    const data = await res.json();
+    showToast(data.detail || '操作失败', 'error');
+  }
+}
+
+document.addEventListener('DOMContentLoaded', loadUsers);
+</script>
+{% endblock %}

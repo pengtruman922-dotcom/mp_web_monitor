@@ -46,6 +46,7 @@ async function fetchReports() {
   if (dt) params.set('date_to', dt);
   params.set('sort', sort);
 
+  appendViewUserParam(params);
   try {
     const res = await fetch('/api/reports?' + params.toString());
     reportsData = await res.json();

@@ -14,4 +14,5 @@ class Report(Base):
     content_html: Mapped[str] = mapped_column(Text, default="")
     content_text: Mapped[str] = mapped_column(Text, default="")
     overview: Mapped[str] = mapped_column(Text, default="")
+    user_id: Mapped[int] = mapped_column(Integer, default=1, index=True)
     generated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

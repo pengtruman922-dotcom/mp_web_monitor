@@ -76,9 +76,15 @@
       <option value="{{ s.id }}">{{ s.name }}</option>
       {% endfor %}
     </select>
-    <input type="date" id="filterDateFrom" class="form-input" style="width:auto" onchange="fetchResults()">
-    <span class="text-gray-400">至</span>
-    <input type="date" id="filterDateTo" class="form-input" style="width:auto" onchange="fetchResults()">
+    <select id="filterDateRange" class="form-input" style="width:auto;min-width:120px" onchange="fetchResults()">
+      <option value="">全部时间</option>
+      <option value="0">今天</option>
+      <option value="7">最近一周</option>
+      <option value="30">最近一月</option>
+      <option value="90">最近三个月</option>
+      <option value="180">最近半年</option>
+      <option value="365">最近一年</option>
+    </select>
     <select id="filterSort" class="form-input" style="width:auto" onchange="fetchResults()">
       <option value="desc">最新优先</option>
       <option value="asc">最早优先</option>
@@ -134,17 +140,20 @@ let selectedIds = new Set();
 async function fetchResults() {
   const params = new URLSearchParams();
   const src = document.getElementById('filterSource').value;
-  const df = document.getElementById('filterDateFrom').value;
-  const dt = document.getElementById('filterDateTo').value;
+  const range = document.getElementById('filterDateRange').value;
   const sort = document.getElementById('filterSort').value;
   const tag = document.getElementById('filterTag').value;
   if (src) params.set('source_id', src);
-  if (df) params.set('date_from', df);
-  if (dt) params.set('date_to', dt);
+  if (range !== '') {
+    const d = new Date();
+    d.setDate(d.getDate() - Number(range));
+    params.set('date_from', d.toISOString().slice(0, 10));
+  }
   if (tag) params.set('tag', tag);
   params.set('sort', sort);
   params.set('limit', '100');
 
+  appendViewUserParam(params);
   try {
     const res = await fetch('/api/results?' + params.toString());
     resultsData = await res.json();
@@ -157,7 +166,9 @@ async function fetchResults() {
 
 async function loadTags() {
   try {
-    const res = await fetch('/api/results/tags');
+    const tp = new URLSearchParams();
+    appendViewUserParam(tp);
+    const res = await fetch('/api/results/tags?' + tp.toString());
     const tags = await res.json();
     const sel = document.getElementById('filterTag');
     tags.forEach(t => {
@@ -198,7 +209,7 @@ function renderResults() {
           <div class="flex items-center gap-3 mt-2 text-xs flex-wrap">
             ${tagsHtml}
             ${r.source_name ? `<span class="text-gray-400">${escHtml(r.source_name)}</span>` : ''}
-            ${r.crawled_at ? `<span class="text-gray-400">${r.crawled_at}</span>` : ''}
+            ${r.published_date ? `<span class="text-gray-400">${escHtml(r.published_date)}</span>` : ''}
             <a href="${escHtml(r.url)}" target="_blank" class="text-blue-600 hover:underline">查看原文</a>
             ${r.has_attachment ? `<span class="text-gray-400">📎 ${escHtml(r.attachment_name)}</span>` : ''}
             <button class="text-red-500 hover:text-red-700" onclick="deleteSingleResult(${r.id})">🗑️</button>

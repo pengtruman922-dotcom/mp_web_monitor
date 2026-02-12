@@ -23,4 +23,5 @@ class CrawlResult(Base):
     attachment_summary: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[str] = mapped_column(String(500), default="")  # comma-separated keyword tags
     published_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    user_id: Mapped[int] = mapped_column(Integer, default=1, index=True)
     crawled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

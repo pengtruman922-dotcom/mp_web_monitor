@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.connection import get_db
 from app.models.task import CrawlTask, TaskStatus
 from app.models.result import CrawlResult
+from app.models.user import User
+from app.auth import get_current_user, get_effective_user_id
 from app.agent.orchestrator import run_batch, is_running, get_running_sources, request_cancel, release_source, _section_history
 
 logger = logging.getLogger(__name__)
@@ -21,17 +23,17 @@ class TriggerRequest(BaseModel):
     source_ids: list[int] | None = None  # None = all active sources
 
 
-async def _run_batch_safe(source_ids: list[int] | None):
+async def _run_batch_safe(source_ids: list[int] | None, user_id: int = 1):
     """Wrapper that catches and logs exceptions from background batch runs."""
     try:
-        batch_id = await run_batch(source_ids=source_ids)
+        batch_id = await run_batch(source_ids=source_ids, user_id=user_id)
         logger.info("Background batch %s completed", batch_id)
     except Exception:
         logger.exception("Background batch failed")
 
 
 @router.post("/trigger")
-async def trigger_crawl(data: TriggerRequest):
+async def trigger_crawl(data: TriggerRequest, user: User = Depends(get_current_user)):
     """Manually trigger a crawl batch."""
     running = get_running_sources()
 
@@ -46,24 +48,31 @@ async def trigger_crawl(data: TriggerRequest):
         pass
 
     # Run in background so the API returns immediately
-    task = asyncio.create_task(_run_batch_safe(data.source_ids))
+    task = asyncio.create_task(_run_batch_safe(data.source_ids, user_id=user.id))
     # Prevent the task from being garbage-collected before completion
     task.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
     return {"message": "采集任务已启动", "status": "started"}
 
 
 @router.get("")
-async def list_tasks(limit: int = 50, db: AsyncSession = Depends(get_db)):
+async def list_tasks(
+    limit: int = 50,
+    view_user_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """List recent crawl tasks."""
-    result = await db.execute(
-        select(CrawlTask).order_by(CrawlTask.created_at.desc()).limit(limit)
-    )
+    uid = get_effective_user_id(user, view_user_id)
+    stmt = select(CrawlTask).order_by(CrawlTask.created_at.desc()).limit(limit)
+    if uid is not None:
+        stmt = stmt.where(CrawlTask.user_id == uid)
+    result = await db.execute(stmt)
     tasks = result.scalars().all()
     return [_to_dict(t) for t in tasks]
 
 
 @router.get("/batch/{batch_id}")
-async def get_batch(batch_id: str, db: AsyncSession = Depends(get_db)):
+async def get_batch(batch_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     """Get all tasks for a batch."""
     result = await db.execute(
         select(CrawlTask).where(CrawlTask.batch_id == batch_id).order_by(CrawlTask.source_id)
@@ -73,7 +82,7 @@ async def get_batch(batch_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/running")
-async def check_running(db: AsyncSession = Depends(get_db)):
+async def check_running(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     """Check if a crawl batch is currently running, and which sources."""
     memory_running = set(get_running_sources())
 
@@ -93,7 +102,7 @@ async def check_running(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{task_id}/progress")
-async def get_task_progress(task_id: int, db: AsyncSession = Depends(get_db)):
+async def get_task_progress(task_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     """Get real-time progress for a running task."""
     task = await db.get(CrawlTask, task_id)
     if not task:
@@ -107,11 +116,13 @@ async def get_task_progress(task_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{task_id}/cancel")
-async def cancel_task(task_id: int, db: AsyncSession = Depends(get_db)):
+async def cancel_task(task_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     """Cancel a running task immediately."""
     task = await db.get(CrawlTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    if user.role != "admin" and task.user_id != user.id:
+        raise HTTPException(403, "无权限")
     if task.status != TaskStatus.running.value:
         raise HTTPException(400, "只能中止运行中的任务")
 
@@ -135,7 +146,7 @@ async def cancel_task(task_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/clear-section-history")
-async def clear_section_history():
+async def clear_section_history(user: User = Depends(get_current_user)):
     """Clear section history for all sources (useful for testing)."""
     count = len(_section_history)
     _section_history.clear()
@@ -143,13 +154,14 @@ async def clear_section_history():
 
 
 @router.delete("/clear-finished")
-async def clear_finished_tasks(db: AsyncSession = Depends(get_db)):
+async def clear_finished_tasks(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     """Delete all completed and cancelled tasks."""
-    result = await db.execute(
-        sa_delete(CrawlTask).where(
-            CrawlTask.status.in_([TaskStatus.completed.value, TaskStatus.cancelled.value])
-        )
+    stmt = sa_delete(CrawlTask).where(
+        CrawlTask.status.in_([TaskStatus.completed.value, TaskStatus.cancelled.value])
     )
+    if user.role != "admin":
+        stmt = stmt.where(CrawlTask.user_id == user.id)
+    result = await db.execute(stmt)
     await db.commit()
     return {"ok": True, "deleted": result.rowcount}
 

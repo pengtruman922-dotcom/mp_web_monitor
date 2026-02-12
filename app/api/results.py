@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.connection import get_db
 from app.models.result import CrawlResult
 from app.models.task import CrawlTask
+from app.models.user import User
+from app.auth import get_current_user, get_effective_user_id
 
 router = APIRouter(prefix="/api/results", tags=["results"])
 
@@ -25,14 +27,21 @@ async def list_results(
     tag: str | None = None,
     sort: str = "desc",
     limit: int = 100,
+    view_user_id: int | None = None,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Query crawl results with optional filtering and sorting."""
+    uid = get_effective_user_id(user, view_user_id)
+
     # Build a query that joins CrawlTask to get source_name
     stmt = select(
         CrawlResult,
         CrawlTask.source_name,
     ).join(CrawlTask, CrawlResult.task_id == CrawlTask.id)
+
+    if uid is not None:
+        stmt = stmt.where(CrawlResult.user_id == uid)
 
     if source_id is not None:
         stmt = stmt.where(CrawlResult.source_id == source_id)
@@ -40,26 +49,27 @@ async def list_results(
     if tag:
         stmt = stmt.where(CrawlResult.tags.contains(tag))
 
+    if date_from or date_to:
+        stmt = stmt.where(CrawlResult.published_date.isnot(None))
+
     if date_from:
         try:
-            dt = datetime.strptime(date_from, "%Y-%m-%d")
-            stmt = stmt.where(CrawlResult.crawled_at >= dt)
+            d = datetime.strptime(date_from, "%Y-%m-%d").date()
+            stmt = stmt.where(CrawlResult.published_date >= d)
         except ValueError:
             raise HTTPException(400, "date_from 格式应为 YYYY-MM-DD")
 
     if date_to:
         try:
-            dt = datetime.strptime(date_to, "%Y-%m-%d")
-            # Include the whole day
-            dt = dt.replace(hour=23, minute=59, second=59)
-            stmt = stmt.where(CrawlResult.crawled_at <= dt)
+            d = datetime.strptime(date_to, "%Y-%m-%d").date()
+            stmt = stmt.where(CrawlResult.published_date <= d)
         except ValueError:
             raise HTTPException(400, "date_to 格式应为 YYYY-MM-DD")
 
     if sort == "asc":
-        stmt = stmt.order_by(CrawlResult.crawled_at.asc())
+        stmt = stmt.order_by(CrawlResult.published_date.asc())
     else:
-        stmt = stmt.order_by(CrawlResult.crawled_at.desc())
+        stmt = stmt.order_by(CrawlResult.published_date.desc())
 
     stmt = stmt.limit(limit)
 
@@ -86,9 +96,16 @@ async def list_results(
 
 
 @router.get("/tags")
-async def list_tags(db: AsyncSession = Depends(get_db)):
+async def list_tags(
+    view_user_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Return all unique tags with counts."""
+    uid = get_effective_user_id(user, view_user_id)
     stmt = select(CrawlResult.tags).where(CrawlResult.tags != "")
+    if uid is not None:
+        stmt = stmt.where(CrawlResult.user_id == uid)
     rows = await db.execute(stmt)
     tag_counts: dict[str, int] = {}
     for (tags_str,) in rows:
@@ -104,19 +121,23 @@ async def list_tags(db: AsyncSession = Depends(get_db)):
 # --- Static path routes MUST come before /{result_id} ---
 
 @router.post("/batch-delete")
-async def batch_delete_results(body: BatchDeleteRequest, db: AsyncSession = Depends(get_db)):
+async def batch_delete_results(body: BatchDeleteRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     if not body.ids:
         return {"ok": True, "deleted": 0}
-    result = await db.execute(
-        delete(CrawlResult).where(CrawlResult.id.in_(body.ids))
-    )
+    stmt = delete(CrawlResult).where(CrawlResult.id.in_(body.ids))
+    if user.role != "admin":
+        stmt = stmt.where(CrawlResult.user_id == user.id)
+    result = await db.execute(stmt)
     await db.commit()
     return {"ok": True, "deleted": result.rowcount}
 
 
 @router.delete("/all")
-async def delete_all_results(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(delete(CrawlResult))
+async def delete_all_results(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    stmt = delete(CrawlResult)
+    if user.role != "admin":
+        stmt = stmt.where(CrawlResult.user_id == user.id)
+    result = await db.execute(stmt)
     await db.commit()
     return {"ok": True, "deleted": result.rowcount}
 
@@ -124,10 +145,12 @@ async def delete_all_results(db: AsyncSession = Depends(get_db)):
 # --- Dynamic path route ---
 
 @router.delete("/{result_id}")
-async def delete_result(result_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_result(result_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     obj = await db.get(CrawlResult, result_id)
     if not obj:
         raise HTTPException(404, "结果不存在")
+    if user.role != "admin" and obj.user_id != user.id:
+        raise HTTPException(403, "无权限")
     await db.delete(obj)
     await db.commit()
     return {"ok": True}

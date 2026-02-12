@@ -19,6 +19,7 @@ class MonitorSource(Base):
     time_range_days: Mapped[int] = mapped_column(Integer, default=7)  # 1-90, collect content from last N days
     max_items: Mapped[int] = mapped_column(Integer, default=30)  # 10-50, max items per crawl
     crawl_rules: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_id: Mapped[int] = mapped_column(Integer, default=1, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

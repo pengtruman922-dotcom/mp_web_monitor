@@ -9,32 +9,41 @@ async def test():
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
-            "--disable-software-rasterizer",
-            "--disable-extensions",
-            "--no-first-run",
         ],
     )
-    # Block images/fonts/css to speed up loading
-    context = await browser.new_context(
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36",
-        locale="zh-CN",
-    )
-    page = await context.new_page()
-    await page.route("**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,css}", lambda route: route.abort())
+    page = await browser.new_page()
 
+    # Test 1: baidu (verify chromium works)
+    print("=== Test 1: baidu.com ===")
     try:
-        print("Loading page...")
-        await page.goto("https://www.nea.gov.cn/", wait_until="domcontentloaded", timeout=60000)
-        print("Page loaded, waiting for content...")
-        await page.wait_for_timeout(3000)
+        await page.goto("https://www.baidu.com/", timeout=15000)
         title = await page.title()
-        text = await page.evaluate("() => document.body.innerText.substring(0, 500)")
-        links = await page.evaluate('() => document.querySelectorAll("a[href]").length')
-        print("Title:", title)
-        print("Links:", links)
-        print("Text:", text[:300])
+        print("OK - Title:", title)
     except Exception as e:
-        print("Error:", e)
+        print("FAIL:", e)
+
+    # Test 2: nea.gov.cn with commit (earliest event)
+    print("=== Test 2: nea.gov.cn (commit) ===")
+    try:
+        resp = await page.goto("https://www.nea.gov.cn/", wait_until="commit", timeout=30000)
+        print("OK - Status:", resp.status if resp else "no response")
+        await page.wait_for_timeout(2000)
+        title = await page.title()
+        print("Title:", title)
+    except Exception as e:
+        print("FAIL:", e)
+
+    # Test 3: nea.gov.cn http (not https)
+    print("=== Test 3: nea.gov.cn HTTP ===")
+    try:
+        resp = await page.goto("http://www.nea.gov.cn/", wait_until="commit", timeout=30000)
+        print("OK - Status:", resp.status if resp else "no response")
+        await page.wait_for_timeout(2000)
+        title = await page.title()
+        print("Title:", title)
+    except Exception as e:
+        print("FAIL:", e)
+
     await browser.close()
     await pw.stop()
 

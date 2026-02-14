@@ -63,9 +63,17 @@ async def update_llm_config(data: LLMConfigUpdate, db: AsyncSession = Depends(ge
 
 
 @router.post("/llm/test")
-async def test_llm_config(data: LLMConfigUpdate, admin: User = Depends(require_admin)):
+async def test_llm_config(data: LLMConfigUpdate, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)):
     """Test LLM connectivity."""
     from openai import AsyncOpenAI
+
+    api_key = data.api_key
+    # If the key is masked, read the real key from database
+    if "***" in api_key:
+        result = await db.execute(select(LLMConfig).where(LLMConfig.is_active == True).limit(1))
+        config = result.scalar_one_or_none()
+        if config:
+            api_key = config.api_key
 
     base_url = data.api_url
     for suffix in ["/chat/completions", "/chat"]:
@@ -73,7 +81,7 @@ async def test_llm_config(data: LLMConfigUpdate, admin: User = Depends(require_a
             base_url = base_url[: -len(suffix)]
             break
 
-    client = AsyncOpenAI(api_key=data.api_key, base_url=base_url)
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
     try:
         response = await client.chat.completions.create(
             model=data.model_name,

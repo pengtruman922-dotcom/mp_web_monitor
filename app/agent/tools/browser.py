@@ -18,7 +18,10 @@ async def _ensure_browser() -> BrowserContext:
     global _browser, _context
     if _browser is None or not _browser.is_connected():
         pw = await async_playwright().start()
-        _browser = await pw.chromium.launch(headless=True)
+        _browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
         _context = await _browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
